@@ -1,14 +1,5 @@
 using UnityEngine;
 
-public interface IUnityObject
-{
-    public bool enabled { get; set; }
-    public GameObject gameObject { get; }
-    public Transform transform { get; }
-    public T GetComponent<T>();
-    public T GetComponentInChildren<T>();
-}
-
 public interface IReflectable
 {
     public Vector3 LastVelocity { get; }
@@ -18,14 +9,9 @@ public interface IReflectable
 public interface IAttackable
 {
     /// <summary>
-    /// 공격 애니메이션이 시작되는 타이밍에 호출되는 함수
+    /// 공격 액션을 시작합니다.
     /// </summary>
     void Attack();
-
-    /// <summary>
-    /// 공격 판정이 일어나는 타이밍에 호출되는 함수
-    /// </summary>
-    void AttackHit();
 }
 
 public interface IMovable
@@ -33,15 +19,15 @@ public interface IMovable
     void Move(Vector3 direction);
 }
 
-public interface IJumpable : IUnityObject
+public interface IJumpable
 {
     void Jump();
+    void SetJumpProcessingEnabled(bool isEnabled);
 }
 
-public interface IDamagable
+public interface IDamageable
 {
-    void TakeDamageRpc(int damage, Vector3 knockback);
-    void DeathCheck();
+    void TakeDamage(int damage, Vector3 knockback);
 }
 
 public interface IDeathable

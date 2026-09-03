@@ -9,14 +9,14 @@ public class InitAudioUI : MonoBehaviour
     private AudioMixer _mixer;
 
     [SerializeField]
-    private string _name;
+    private OnlyOneUnityString _name;
 
     private Slider _slider;
 
     private void Awake()
     {
         _slider = GetComponent<Slider>();
-        if (_mixer.GetFloat(_name, out float value))
+        if (_name != null && _mixer.GetFloat(_name, out float value))
         {
             _slider.SetValueWithoutNotify(ConvertToLinear(value));
         }

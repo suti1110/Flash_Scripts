@@ -7,6 +7,16 @@ public class SO_SoundController : ScriptableObject
     [SerializeField]
     private AudioMixer _mixer;
 
+    [Header("노출 파라미터")]
+    [SerializeField]
+    private OnlyOneUnityString _masterParameter;
+
+    [SerializeField]
+    private OnlyOneUnityString _bgmParameter;
+
+    [SerializeField]
+    private OnlyOneUnityString _sfxParameter;
+
     [SerializeField]
     private float _minVolume;
 
@@ -15,17 +25,25 @@ public class SO_SoundController : ScriptableObject
 
     public void SetMasterVolume(float volume)
     {
-        _mixer.SetFloat("Master", ConvertToDecibel(volume));
+        SetVolume(_masterParameter, volume);
     }
 
     public void SetBGMVolume(float volume)
     {
-        _mixer.SetFloat("BGM", ConvertToDecibel(volume));
+        SetVolume(_bgmParameter, volume);
     }
 
     public void SetSFXVolume(float volume)
     {
-        _mixer.SetFloat("SFX", ConvertToDecibel(volume));
+        SetVolume(_sfxParameter, volume);
+    }
+
+    private void SetVolume(OnlyOneUnityString parameter, float volume)
+    {
+        if (_mixer == null || parameter == null)
+            return;
+
+        _mixer.SetFloat(parameter, ConvertToDecibel(volume));
     }
 
     // 선형적인 0~1 값을 오디오 믹서용 데시벨(dB)로 변환하는 핵심 함수

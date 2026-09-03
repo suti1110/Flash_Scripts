@@ -15,19 +15,26 @@ public class FinishLine : NetworkBehaviour
 
         Rigidbody rb = other.attachedRigidbody;
 
-        // 부딪힌 물체가 네트워크 플레이어인지 확인합니다. (NetworkObject가 있는지)
-        if (rb && rb.TryGetComponent<NetworkObject>(out var playerNetObj))
+        // 투척물도 NetworkObject와 Rigidbody를 가지므로 NetworkObject 여부만으로 선수를 판정하면 안 된다.
+        // 자식 신체 Collider는 attachedRigidbody를 통해 Player 루트로 정규화하고, Player가 없는 맵 오브젝트는 제외한다.
+        if (
+            rb == null
+            || !rb.TryGetComponent<Player>(out _)
+            || !rb.TryGetComponent(out NetworkObject playerNetObj)
+        )
         {
-            // 플레이어가 맞다면 1등이 들어온 것이므로, 자물쇠를 걸어버립니다. (2, 3등 차단)
-            _isGameEnded = true;
-
-            // 1등으로 들어온 플레이어의 고유 번호(ClientId)를 가져옵니다.
-            ulong winnerId = playerNetObj.OwnerClientId;
-
-            EditorLog.Log($"[심판] {winnerId}번 선수가 1등으로 들어왔습니다! 게임 종료!");
-
-            // 게임 매니저에게 "얘가 우승했다!" 라고 방송을 지시합니다.
-            RaceModeManager.MyInstance.DeclareWinnerRpc(winnerId);
+            return;
         }
+
+        // 플레이어가 맞다면 1등이 들어온 것이므로, 자물쇠를 걸어버립니다. (2, 3등 차단)
+        _isGameEnded = true;
+
+        // 1등으로 들어온 플레이어의 고유 번호(ClientId)를 가져옵니다.
+        ulong winnerId = playerNetObj.OwnerClientId;
+
+        EditorLog.Log($"[심판] {winnerId}번 선수가 1등으로 들어왔습니다! 게임 종료!");
+
+        if (GameModeManager.Instance != null)
+            GameModeManager.Instance.ReportPlayerFinished(winnerId);
     }
 }

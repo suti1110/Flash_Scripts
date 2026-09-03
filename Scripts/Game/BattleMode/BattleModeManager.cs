@@ -1,16 +1,19 @@
-﻿using DG.Tweening; // UI 연출용
+// BattleModeManager는 서버 권한으로 생존 플레이어를 추적하고 최후의 생존자를 승자로 확정한다.
+// 클라이언트에는 결과와 UI 연출에 필요한 정보만 전달하여 경기 종료가 중복 처리되지 않도록 한다.
+
+using DG.Tweening; // UI 연출용
 using Unity.Netcode;
 using UnityEngine;
 
 public class BattleModeManager : GameModeManager
 {
+    private const float SimultaneousEliminationWindowSeconds = 0.05f;
+
     // 1. 현재 게임 모드 명시 (부모 클래스에서 사용됨)
     protected override GameKind GameKind => GameKind.Battle;
 
-    // 2. 싱글톤 접근용 프로퍼티
-    public static BattleModeManager MyInstance => Instance as BattleModeManager;
-
     private bool _isGameOver = false;
+    private Coroutine _pendingWinCheck;
 
     public override void OnNetworkSpawn()
     {
@@ -40,9 +43,26 @@ public class BattleModeManager : GameModeManager
         CheckWinCondition(clientId);
     }
 
+    public override void ReportPlayerEliminated(ulong clientId)
+    {
+        if (!IsServer || _isGameOver || _pendingWinCheck != null)
+            return;
+
+        // 같은 서버 틱 전후로 도착한 치명 피해를 짧게 모은 뒤 생존자를 계산해야
+        // 마지막 두 플레이어의 동시 사망을 패킷 처리 순서대로 승패 판정하지 않는다.
+        _pendingWinCheck = StartCoroutine(CheckWinConditionAfterTieWindow());
+    }
+
+    private System.Collections.IEnumerator CheckWinConditionAfterTieWindow()
+    {
+        yield return new WaitForSecondsRealtime(SimultaneousEliminationWindowSeconds);
+        _pendingWinCheck = null;
+        CheckWinCondition();
+    }
+
     // =================================================================
     // 승리 조건 체크 (오직 서버만 호출)
-    // - PlayerDamage 스크립트에서 체력이 0이 될 때마다(DieServerRpc) 이 함수를 호출합니다.
+    // - PlayerDeath가 서버에서 배틀 모드 탈락을 확정할 때 이 함수를 호출합니다.
     // =================================================================
     public void CheckWinCondition(ulong disconnectedClientId = 99999)
     {
@@ -52,16 +72,18 @@ public class BattleModeManager : GameModeManager
         int aliveCount = 0;
         ulong lastSurvivorId = 9999; // 아무도 아닌 임시 번호
 
-        // 씬에 있는 모든 PlayerDamage를 싹 다 뒤져서 생존자를 셉니다.
-        foreach (var player in FindObjectsByType<PlayerDamage>(FindObjectsSortMode.None))
+        foreach (Player player in GameManager.Instance.Players)
         {
-            if (player.OwnerClientId == disconnectedClientId)
+            if (!player.TryGetComponent(out PlayerDamage playerDamage))
                 continue;
 
-            if (player.Hp.Value > 0)
+            if (playerDamage.OwnerClientId == disconnectedClientId)
+                continue;
+
+            if (playerDamage.IsAlive)
             {
                 aliveCount++;
-                lastSurvivorId = player.OwnerClientId; // 일단 기억해둠
+                lastSurvivorId = playerDamage.OwnerClientId;
             }
         }
 
@@ -99,16 +121,19 @@ public class BattleModeManager : GameModeManager
             // 2. 승패 분기
             if (winnerClientId == 9999)
             {
+                AudioManager.SfxPlay(AudioManager.Instance?.Container?.Draw);
                 _resultText.text = "DRAW";
                 _resultText.color = Color.gray;
             }
             else if (NetworkManager.Singleton.LocalClientId == winnerClientId)
             {
+                AudioManager.SfxPlay(AudioManager.Instance?.Container?.Victory);
                 _resultText.text = "VICTORY!";
                 _resultText.color = Color.yellow;
             }
             else
             {
+                AudioManager.SfxPlay(AudioManager.Instance?.Container?.Defeat);
                 _resultText.text = "DEFEAT";
                 _resultText.color = Color.red;
             }

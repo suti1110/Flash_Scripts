@@ -1,3 +1,6 @@
+// RequireInterfaceDrawer는 인터페이스 구현체만 할당할 수 있도록 Object 필드의 드래그와 선택 결과를 검증한다.
+// 잘못된 Attribute 인수나 호환되지 않는 객체는 인스펙터에서 즉시 오류로 표시한다.
+
 using System;
 using UnityEditor;
 using UnityEngine;

@@ -5,6 +5,37 @@ using UnityEngine;
 // 캐릭터 프리팹의 최상단(NetworkObject가 있는 곳)에 붙어있어야 합니다.
 public class PlayerSpawnHandler : NetworkBehaviour
 {
+    private Vector3 _spawnPosition;
+    private Quaternion _spawnRotation;
+    private bool _hasSpawnPoint;
+
+    public override void OnNetworkSpawn()
+    {
+        base.OnNetworkSpawn();
+
+        if (IsServer && !_hasSpawnPoint)
+            SetSpawnPoint(transform.position, transform.rotation);
+    }
+
+    internal void SetSpawnPoint(Vector3 spawnPosition, Quaternion spawnRotation)
+    {
+        if (!IsServer)
+            return;
+
+        _spawnPosition = spawnPosition;
+        _spawnRotation = spawnRotation;
+        _hasSpawnPoint = true;
+    }
+
+    internal bool TryRespawnAtSpawnPoint()
+    {
+        if (!IsServer || !_hasSpawnPoint)
+            return false;
+
+        ForceTeleportRpc(_spawnPosition, _spawnRotation);
+        return true;
+    }
+
     // [Rpc(SendTo.Owner)]는 "서버 -> 이 캐릭터의 주인 1명에게만" 보내는 최신 V2 강제 명령
     [Rpc(SendTo.Owner)]
     public void ForceTeleportRpc(Vector3 spawnPosition, Quaternion spawnRotation)

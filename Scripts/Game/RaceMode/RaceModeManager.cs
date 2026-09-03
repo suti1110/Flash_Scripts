@@ -7,7 +7,11 @@ public class RaceModeManager : GameModeManager
 {
     protected override GameKind GameKind => GameKind.Race;
 
-    public static RaceModeManager MyInstance => Instance as RaceModeManager;
+    public override void ReportPlayerFinished(ulong clientId)
+    {
+        if (IsServer)
+            DeclareWinnerRpc(clientId);
+    }
 
     [Rpc(SendTo.Everyone)]
     public void DeclareWinnerRpc(ulong winnerClientId)
@@ -22,6 +26,7 @@ public class RaceModeManager : GameModeManager
         // 2. 내 번호와 우승자의 번호를 비교해서 승패를 가릅니다!
         if (NetworkManager.Singleton.LocalClientId == winnerClientId)
         {
+            AudioManager.SfxPlay(AudioManager.Instance?.Container?.Victory);
             // 우승자 번호가 내 번호랑 똑같다면? 내가 1등!
             if (_resultText != null)
             {
@@ -32,6 +37,7 @@ public class RaceModeManager : GameModeManager
         }
         else
         {
+            AudioManager.SfxPlay(AudioManager.Instance?.Container?.Defeat);
             // 번호가 다르다면? 나는 2, 3, 4등 중 한 명이므로 패배!
             if (_resultText != null)
             {

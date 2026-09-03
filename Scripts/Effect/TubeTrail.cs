@@ -39,12 +39,32 @@ public class TubeTrail : MonoBehaviour
     private readonly List<int> _triangles = new();
     private readonly List<Vector2> _uvs = new();
     private readonly List<Color> _colors = new();
+    private Vector3[] _circleDirections;
 
     void Awake()
     {
         _meshFilter = GetComponent<MeshFilter>();
         _mesh = new Mesh { name = "TubeTrail" };
+        _mesh.MarkDynamic();
         _meshFilter.mesh = _mesh;
+
+        int pointCapacity = Mathf.Max(2, _maxPoints);
+        int sideCount = Mathf.Max(3, _sides);
+        int vertexCapacity = pointCapacity * sideCount;
+
+        _points.Capacity = pointCapacity;
+        _pointTimes.Capacity = pointCapacity;
+        _vertices.Capacity = vertexCapacity;
+        _uvs.Capacity = vertexCapacity;
+        _colors.Capacity = vertexCapacity;
+        _triangles.Capacity = (pointCapacity - 1) * sideCount * 6;
+
+        _circleDirections = new Vector3[sideCount];
+        for (int i = 0; i < sideCount; i++)
+        {
+            float angle = (float)i / sideCount * Mathf.PI * 2f;
+            _circleDirections[i] = new Vector3(Mathf.Cos(angle), Mathf.Sin(angle), 0f);
+        }
     }
 
     void Update()
@@ -65,7 +85,7 @@ public class TubeTrail : MonoBehaviour
         // 새 포인트 추가
         if (
             _points.Count == 0
-            || Vector3.Distance(samplePos, _points[_points.Count - 1]) > _minDistance
+            || (samplePos - _points[_points.Count - 1]).sqrMagnitude > _minDistance * _minDistance
         )
         {
             _points.Add(samplePos);
@@ -108,12 +128,7 @@ public class TubeTrail : MonoBehaviour
 
             for (int j = 0; j < _sides; j++)
             {
-                float angle = (float)j / _sides * Mathf.PI * 2f;
-                Vector3 circlePoint = new Vector3(
-                    Mathf.Cos(angle) * currentRadius,
-                    Mathf.Sin(angle) * currentRadius,
-                    0
-                );
+                Vector3 circlePoint = _circleDirections[j] * currentRadius;
                 Vector3 worldPos = _points[i] + rotation * circlePoint;
 
                 // 월드 좌표 → 로컬 좌표로 변환 후 버텍스 추가
@@ -156,6 +171,19 @@ public class TubeTrail : MonoBehaviour
     {
         if (_mesh != null)
             Destroy(_mesh);
+    }
+
+    private void OnDisable()
+    {
+        _points.Clear();
+        _pointTimes.Clear();
+        _vertices.Clear();
+        _triangles.Clear();
+        _uvs.Clear();
+        _colors.Clear();
+
+        if (_mesh != null)
+            _mesh.Clear();
     }
 
 #if UNITY_EDITOR

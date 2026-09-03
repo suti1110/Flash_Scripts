@@ -42,3 +42,5 @@ public class MirrorPlaneRegistrar : MonoBehaviour
 
     private void OnDisable() => AllMirrors.Remove(this);
 }
+// MirrorPlaneRegistrar은 거울 반사 렌더링에 필요한 데이터와 렌더링 수명주기를 관리한다.
+// 카메라별 반사 계산과 등록 상태를 분리하여 렌더 패스가 안정적으로 재사용되도록 한다.

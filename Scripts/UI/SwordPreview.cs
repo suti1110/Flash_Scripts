@@ -13,25 +13,31 @@ public class SwordPreview : MonoBehaviour
 
     private void Awake()
     {
+        PlayerLoadoutState.Instance.InitializeSword(
+            _sword.DefaultSwordIndex,
+            _sword.AllSwords.Length
+        );
         UpdateSword();
     }
 
     public void IncreaseIndex()
     {
-        _sword.SwordIndex = (_sword.SwordIndex + 1) % _sword.AllSwords.Length;
+        PlayerLoadoutState.Instance.ChangeSwordIndex(1, _sword.AllSwords.Length);
         UpdateSword();
     }
 
     public void DecreaseIndex()
     {
-        _sword.SwordIndex =
-            (_sword.SwordIndex - 1 + _sword.AllSwords.Length) % _sword.AllSwords.Length;
+        PlayerLoadoutState.Instance.ChangeSwordIndex(-1, _sword.AllSwords.Length);
         UpdateSword();
     }
 
     private void UpdateSword()
     {
-        _swordRenderer.sharedMaterial = _sword.AllSwords[_sword.SwordIndex].Material;
-        _swordMeshFilter.mesh = _sword.AllSwords[_sword.SwordIndex].Mesh;
+        int swordIndex = PlayerLoadoutState.Instance.SwordIndex;
+        _swordRenderer.sharedMaterial = _sword.AllSwords[swordIndex].Material;
+        _swordMeshFilter.mesh = _sword.AllSwords[swordIndex].Mesh;
     }
 }
+// SwordPreview은 게임 또는 네트워크 상태를 사용자에게 표시하고 UI 입력을 적절한 시스템으로 전달한다.
+// UI가 핵심 게임 규칙을 직접 변경하지 않도록 표시 책임과 데이터 소유권을 분리한다.

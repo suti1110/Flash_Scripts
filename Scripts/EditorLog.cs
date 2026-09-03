@@ -23,3 +23,5 @@ public static class EditorLog
     [Conditional("UNITY_EDITOR"), Conditional("DEVELOPMENT_BUILD")]
     public static void LogError(object message, Object context) => Debug.LogError(message, context);
 }
+// EditorLog은 프로젝트 전반에서 사용하는 공통 게임플레이 책임을 담당한다.
+// 관련 처리 과정을 한곳에 모아 호출 측이 구체적인 구현 세부 사항에 의존하지 않도록 한다.

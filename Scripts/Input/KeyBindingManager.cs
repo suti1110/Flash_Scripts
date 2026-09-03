@@ -27,6 +27,7 @@ public class KeyBindingManager : MonoBehaviour
 
     private void StartRebinding()
     {
+        AudioManager.SfxPlay(AudioManager.Instance?.Container?.MouseClick);
         _rebindButton.interactable = false;
         _bindingText.text = "Press any key...";
 
@@ -48,6 +49,7 @@ public class KeyBindingManager : MonoBehaviour
 
     private void FinishRebinding()
     {
+        AudioManager.SfxPlay(AudioManager.Instance?.Container?.Notification);
         UpdateBindingText();
         _targetAction.action.Enable();
         _rebindButton.interactable = true;

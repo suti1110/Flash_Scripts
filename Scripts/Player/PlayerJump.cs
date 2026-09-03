@@ -1,13 +1,16 @@
+using Unity.Netcode;
 using UnityEngine;
 
-public class PlayerJump : MonoBehaviour, IJumpable
+public class PlayerJump : NetworkBehaviour, IJumpable
 {
     [Header("State")]
     [SerializeField]
     private SO_Jumping _jumping;
 
-    private readonly PlayerJumpingStateManager _jumpingState = PlayerJumpingStateManager.Instance;
+    private PlayerJumpingStateMachine _jumpingStateMachine;
     private Rigidbody _rb;
+    private bool _hasGroundState;
+    private bool _wasGrounded;
 
     [Header("Ground Check (SphereCast)")]
     [SerializeField]
@@ -25,38 +28,36 @@ public class PlayerJump : MonoBehaviour, IJumpable
     private void Awake()
     {
         _rb = GetComponent<Rigidbody>();
-
-        _jumpingState[gameObject].OnJumpingStateChanged += OnJumpingStateChanged;
-    }
-
-    private void OnJumpingStateChanged(PlayerJumpingState state)
-    {
-        switch (state)
-        {
-            case PlayerJumpingState.Idle:
-                _rb.useGravity = true;
-                break;
-            case PlayerJumpingState.Jumping:
-                _rb.useGravity = true;
-                break;
-            case PlayerJumpingState.Falling:
-                _rb.useGravity = true;
-                break;
-            case PlayerJumpingState.Dead:
-                _rb.useGravity = false;
-                break;
-        }
-    }
-
-    private void OnDestroy()
-    {
-        _jumpingState[gameObject].OnJumpingStateChanged -= OnJumpingStateChanged;
+        _jumpingStateMachine = GetComponent<Player>().JumpingStateMachine;
     }
 
     public void Jump()
     {
-        _rb.AddForce(Vector3.up * _jumping.JumpForce, ForceMode.Impulse);
-        _jumpingState[gameObject].JumpingState = PlayerJumpingState.Jumping;
+        if (Time.timeScale <= 0f)
+            return;
+
+        if (!_jumpingStateMachine.TryChangeState<PlayerJumpingAscendingState>())
+            return;
+
+        float jumpForceMultiplier = RelayManager.Instance != null
+            ? RelayManager.Instance.CurrentRoomSettings.JumpForceMultiplier
+            : 1f;
+        _rb.AddForce(
+            Vector3.up * (_jumping.JumpForce * jumpForceMultiplier),
+            ForceMode.Impulse
+        );
+        _wasGrounded = false;
+        PlayMovementAudio(true, transform.position);
+    }
+
+    public void SetJumpProcessingEnabled(bool isEnabled)
+    {
+        enabled = isEnabled;
+    }
+
+    internal void ApplyGravity(bool useGravity)
+    {
+        _rb.useGravity = useGravity;
     }
 
     private void FixedUpdate()
@@ -68,7 +69,7 @@ public class PlayerJump : MonoBehaviour, IJumpable
     {
         if (
             _rb.linearVelocity.y > 0.1f
-            && _jumpingState[gameObject].JumpingState == PlayerJumpingState.Jumping
+            && _jumpingStateMachine.IsInState<PlayerJumpingAscendingState>()
         )
             return;
 
@@ -81,14 +82,49 @@ public class PlayerJump : MonoBehaviour, IJumpable
             _layerMask
         );
 
+        if (!_hasGroundState)
+        {
+            _hasGroundState = true;
+            _wasGrounded = isGround;
+        }
+        else if (isGround && !_wasGrounded)
+        {
+            PlayMovementAudio(false, transform.position);
+        }
+
+        _wasGrounded = isGround;
+
         if (isGround)
         {
-            _jumpingState[gameObject].JumpingState = PlayerJumpingState.Idle;
+            _jumpingStateMachine.TryChangeState<PlayerJumpingIdleState>();
         }
         else
         {
-            _jumpingState[gameObject].JumpingState = PlayerJumpingState.Falling;
+            _jumpingStateMachine.TryChangeState<PlayerJumpingFallingState>();
         }
+    }
+
+    private void PlayMovementAudio(bool isJump, Vector3 position)
+    {
+        if (IsSpawned)
+            PlayMovementAudioRpc(isJump, position);
+        else
+            PlayMovementAudioLocal(isJump, position);
+    }
+
+    [Rpc(SendTo.Everyone, InvokePermission = RpcInvokePermission.Owner)]
+    private void PlayMovementAudioRpc(bool isJump, Vector3 position)
+    {
+        PlayMovementAudioLocal(isJump, position);
+    }
+
+    private static void PlayMovementAudioLocal(bool isJump, Vector3 position)
+    {
+        SO_SFXContainer container = AudioManager.Instance != null
+            ? AudioManager.Instance.Container
+            : null;
+        AudioClip clip = isJump ? container?.Jump : container?.Land;
+        AudioManager.SfxPlayAtPoint(clip, position);
     }
 
     private void OnValidate()

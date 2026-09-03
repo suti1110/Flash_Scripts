@@ -84,6 +84,12 @@ public class MessageOnUI : MonoBehaviour
 
     public static void ShowMessage(string message, MessageType type = MessageType.Message)
     {
+        if (Instance == null)
+        {
+            EditorLog.LogWarning($"MessageOnUI가 없어 메시지를 표시하지 못했습니다: {message}");
+            return;
+        }
+
         if (Instance._messageColors.TryGetValue(type, out var colors))
         {
             Instance._messagePanel.color = colors.PanelColor;
@@ -91,6 +97,12 @@ public class MessageOnUI : MonoBehaviour
             Instance._messageText.outlineColor = colors.TextOutlineColor;
         }
         Instance._messageText.text = message;
+        SO_SFXContainer container = AudioManager.Instance?.Container;
+        AudioManager.SfxPlay(
+            type == MessageType.Warning ? container?.Warning : container?.Notification
+        );
         Instance.PanelSummon();
     }
 }
+// MessageOnUI은 게임 또는 네트워크 상태를 사용자에게 표시하고 UI 입력을 적절한 시스템으로 전달한다.
+// UI가 핵심 게임 규칙을 직접 변경하지 않도록 표시 책임과 데이터 소유권을 분리한다.

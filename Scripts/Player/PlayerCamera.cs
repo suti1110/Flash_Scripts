@@ -23,7 +23,7 @@ public class PlayerCamera : MonoBehaviour, IReflectable
     [SerializeField]
     private LayerMask _cameraBlockLayers;
 
-    private readonly PlayerStateManager _playerState = PlayerStateManager.Instance;
+    private PlayerStateMachine _playerStateMachine;
 
     private Rigidbody _rb;
     private Vector3 _lastVelocity;
@@ -33,6 +33,7 @@ public class PlayerCamera : MonoBehaviour, IReflectable
     {
         _controller = new CameraController();
         _rb = GetComponent<Rigidbody>();
+        _playerStateMachine = GetComponent<Player>().StateMachine;
     }
 
     private void OnEnable()
@@ -54,14 +55,17 @@ public class PlayerCamera : MonoBehaviour, IReflectable
     {
         _lastVelocity = _rb.linearVelocity;
 
-        if (_playerState[gameObject].State != PlayerState.Dead)
+        if (!_playerStateMachine.CurrentState.UsesDetachedCameraRotation)
+        {
             _rb.MoveRotation(Quaternion.Euler(0, _pivotRotation.x, 0));
-        else
-            _rb.MoveRotation(Quaternion.Euler(-_pivotRotation.y, _pivotRotation.x, 0));
+        }
     }
 
     private void LateUpdate()
     {
+        if (Time.timeScale <= 0f)
+            return;
+
         SetCameraRotation(
             _pivotRotation
                 + 0.1f * _mouseSensitivity * _controller.MousePosition.Mouse.ReadValue<Vector2>()

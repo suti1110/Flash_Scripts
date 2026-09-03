@@ -1,3 +1,6 @@
+// PlayerMove는 입력 방향을 Rigidbody 힘으로 변환하고 방 설정의 이동 속도 배율을 적용한다.
+// 실제 이동은 소유자 인스턴스에서 수행되며 최대 속도와 마찰 보정으로 물리 이동을 안정화한다.
+
 using UnityEngine;
 
 public class PlayerMove : MonoBehaviour, IMovable
@@ -19,9 +22,14 @@ public class PlayerMove : MonoBehaviour, IMovable
 
     public void Move(Vector3 direction)
     {
+        float moveSpeedMultiplier =
+            RelayManager.Instance != null
+                ? RelayManager.Instance.CurrentRoomSettings.MoveSpeedMultiplier
+                : 1f;
+
         //EditorLog.Log(transform.forward);
         direction = transform.TransformDirection(direction);
-        _rb.AddForce(direction * _moving.MoveSpeed, ForceMode.Force);
+        _rb.AddForce(direction * (_moving.MoveSpeed * moveSpeedMultiplier), ForceMode.Force);
 
         Vector3 moveDirection = new Vector3(
             _rb.linearVelocity.x,
@@ -45,9 +53,10 @@ public class PlayerMove : MonoBehaviour, IMovable
             _physicMaterial.dynamicFriction = Mathf.Lerp(0, 3, correctionRate);
         }
 
-        if (_rb.linearVelocity.magnitude > _moving.LightSpeed)
+        float maximumSpeed = _moving.LightSpeed * moveSpeedMultiplier;
+        if (_rb.linearVelocity.magnitude > maximumSpeed)
         {
-            _rb.linearVelocity = _rb.linearVelocity.normalized * _moving.LightSpeed; // 플레이어가 시스템적인 문제가 생길 정도로 빨라지지 않게 하기 위한 리미트
+            _rb.linearVelocity = _rb.linearVelocity.normalized * maximumSpeed; // 플레이어가 시스템적인 문제가 생길 정도로 빨라지지 않게 하기 위한 리미트
         }
     }
 

@@ -28,9 +28,7 @@ public class SkillStatusUI : MonoBehaviour
     private Color _unaffordableColor = new Color(0.5f, 0.5f, 0.5f, 0.5f);
 
     private SO_Skill CurrentSkill =>
-        _skillSet != null && _skillSlotIndex >= 0 && _skillSlotIndex < _skillSet.Skills.Length
-            ? _skillSet.Skills[_skillSlotIndex]
-            : null;
+        _skillSet != null ? PlayerLoadoutState.Instance.GetSkill(_skillSlotIndex, _skillSet) : null;
 
     private void Awake()
     {
@@ -55,12 +53,24 @@ public class SkillStatusUI : MonoBehaviour
             _skillCostText.SetText("{0:0}", skill.EnergyCost);
         }
 
-        _energyTracker.OnEnergyChanged += UpdateSkillStatus;
+        if (_energyTracker != null)
+        {
+            _energyTracker.OnEnergyChanged += UpdateSkillStatus;
+            UpdateSkillStatus(_energyTracker.Energy);
+        }
+    }
+
+    private void OnDestroy()
+    {
+        if (_energyTracker != null)
+            _energyTracker.OnEnergyChanged -= UpdateSkillStatus;
     }
 
     private void UpdateSkillStatus(float energy)
     {
         SO_Skill skill = CurrentSkill;
+        if (skill == null)
+            return;
 
         if (_skillIcon != null)
         {
