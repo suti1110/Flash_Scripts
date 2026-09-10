@@ -140,10 +140,12 @@ public sealed class PlayerMapInteraction : NetworkBehaviour
     // PlayerActionStateMachine의 발동 지점에서만 호출된다. 클라이언트는 실행 의도만 보내고 실제 투척은 서버가 검증한다.
     private void ExecutePendingThrow()
     {
-        if (IsSpawned)
-            ExecutePendingThrowRpc();
+        Vector3 cameraDirection = GetCameraThrowDirection();
+
+        if (IsSpawned && !IsServer)
+            ExecutePendingThrowRpc(cameraDirection);
         else
-            ExecutePendingThrowOnAuthority();
+            ExecutePendingThrowOnAuthority(cameraDirection);
     }
 
     // 발동 전에 다른 State가 투척을 끊었을 때 서버가 보관 중인 대기를 해제한다.
@@ -232,15 +234,18 @@ public sealed class PlayerMapInteraction : NetworkBehaviour
     }
 
     [Rpc(SendTo.Server, InvokePermission = RpcInvokePermission.Everyone)]
-    private void ExecutePendingThrowRpc(RpcParams rpcParams = default)
+    private void ExecutePendingThrowRpc(Vector3 cameraDirection, RpcParams rpcParams = default)
     {
         if (rpcParams.Receive.SenderClientId != OwnerClientId)
             return;
 
-        ExecutePendingThrowOnAuthority();
+        if (!IsFinite(cameraDirection) || cameraDirection.sqrMagnitude <= 0.25f)
+            return;
+
+        ExecutePendingThrowOnAuthority(cameraDirection.normalized);
     }
 
-    private void ExecutePendingThrowOnAuthority()
+    private void ExecutePendingThrowOnAuthority(Vector3 cameraDirection)
     {
         if (!_isThrowPending || _heldObject == null || _throwing == null)
             return;
@@ -251,20 +256,44 @@ public sealed class PlayerMapInteraction : NetworkBehaviour
                 ? RelayManager.Instance.CurrentRoomSettings.ThrowPower
                 : _throwing.ThrowSpeed;
 
-        // 각도는 방 설정에 포함하지 않고 SO의 조작감 설정을 항상 사용한다.
-        // 플레이어 기울기의 영향을 제거한 수평 전방을 기준으로 월드 위쪽 발사각을 만든다.
-        Vector3 horizontalForward = Vector3.ProjectOnPlane(transform.forward, Vector3.up).normalized;
-        if (horizontalForward.sqrMagnitude <= Mathf.Epsilon)
-            horizontalForward = transform.forward.normalized;
-
-        float throwAngleRadians = _throwing.ThrowAngle * Mathf.Deg2Rad;
-        Vector3 throwDirection =
-            horizontalForward * Mathf.Cos(throwAngleRadians)
-            + Vector3.up * Mathf.Sin(throwAngleRadians);
+        // 소유자의 카메라 방향을 기준으로 조준하고 SO의 투척각을 추가한다.
+        Vector3 aimDirection = cameraDirection.sqrMagnitude > Mathf.Epsilon
+            ? cameraDirection.normalized
+            : transform.forward;
+        Vector3 cameraRight = Vector3.Cross(Vector3.up, aimDirection).normalized;
+        if (cameraRight.sqrMagnitude <= Mathf.Epsilon)
+            cameraRight = transform.right;
+        Vector3 throwDirection = Quaternion.AngleAxis(
+            -_throwing.ThrowAngle,
+            cameraRight
+        ) * aimDirection;
 
         // Throw가 성공하면 GrabbableObject가 ClearHeldObject를 호출하여 대기 상태도 원자적으로 끝낸다.
         if (!_heldObject.Throw(throwDirection, throwSpeed))
             _isThrowPending = false;
+    }
+
+    private Vector3 GetCameraThrowDirection()
+    {
+        if (TryGetComponent(out PlayerCamera playerCamera))
+        {
+            if (playerCamera.MainCamera != null)
+                return playerCamera.MainCamera.transform.forward;
+            if (playerCamera.CameraPivot != null)
+                return playerCamera.CameraPivot.forward;
+        }
+
+        return transform.forward;
+    }
+
+    private static bool IsFinite(Vector3 value)
+    {
+        return IsFinite(value.x) && IsFinite(value.y) && IsFinite(value.z);
+    }
+
+    private static bool IsFinite(float value)
+    {
+        return !float.IsNaN(value) && !float.IsInfinity(value);
     }
 
     [Rpc(SendTo.Server, InvokePermission = RpcInvokePermission.Everyone)]

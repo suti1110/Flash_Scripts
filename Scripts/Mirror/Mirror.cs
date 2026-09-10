@@ -18,7 +18,7 @@ public class Mirror : MonoBehaviour
             float angle = Quaternion.LookRotation(reflectDirection).eulerAngles.y;
             if (angle > 180)
                 angle -= 360;
-            camera.SetCameraRotation(new Vector2(angle, 0));
+            camera.TweenCameraRotation(new Vector2(angle, 0));
             collision.rigidbody.linearVelocity =
                 reflectDirection * camera.LastVelocity.magnitude * _reflectPower;
             PlayReflectionAudio(collision.contacts[0].point);

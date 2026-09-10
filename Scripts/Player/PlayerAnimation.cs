@@ -60,6 +60,9 @@ public class PlayerAnimation : MonoBehaviour
     private OwnerNetworkAnimator _networkAnimator;
     private IPlayerMovingInput _playerMovingInput;
     private bool _isLocallyControlled;
+    private Quaternion _animInitialLocalRotation;
+    private Quaternion _immediateDamageFacingRotation;
+    private bool _hasImmediateDamageFacing;
 
     // --- Playables API 변수 ---
     private PlayableGraph _skillGraph;
@@ -88,6 +91,9 @@ public class PlayerAnimation : MonoBehaviour
     {
         _networkObject = GetComponent<NetworkObject>();
         _networkAnimator = GetComponent<OwnerNetworkAnimator>();
+        if (_anim != null)
+            _animInitialLocalRotation = _anim.transform.localRotation;
+
         _skillDirector = GetComponent<PlayableDirector>();
         if (_skillDirector == null)
             _skillDirector = gameObject.AddComponent<PlayableDirector>();
@@ -195,6 +201,56 @@ public class PlayerAnimation : MonoBehaviour
         // 스킬 Playable이 Animator Controller를 감싸는 중에도 동일 Bool 파라미터가 동기화되도록 전달한다.
         if (_isSkillPresentationPlaying && _skillControllerPlayable.IsValid())
             _skillControllerPlayable.SetBool(parameterHash, value);
+    }
+
+    private void LateUpdate()
+    {
+        if (!_hasImmediateDamageFacing || _anim == null)
+            return;
+
+        // NetworkAnimator가 실제 피격 상태의 해제를 전달하면 비주얼 선반영도 종료한다.
+        if (!_anim.GetBool(PlayerAnimationHash.IsTakingDamage))
+        {
+            ClearImmediateDamageFacing();
+            return;
+        }
+
+        // Owner 권한의 NetworkTransform 회전이 늦게 도착해도 관전자에게는
+        // 피격 포즈와 피격 방향이 같은 프레임부터 보이도록 비주얼만 고정한다.
+        _anim.transform.rotation = _immediateDamageFacingRotation;
+    }
+
+    // 서버에서 확정된 피격을 관전자 화면에 즉시 선반영한다.
+    // 실제 상태와 해제 시점은 피격자 Owner의 상태머신 및 NetworkAnimator가 계속 담당한다.
+    internal void PlayImmediateDamageReaction(Vector3 worldFacingDirection)
+    {
+        SetBoolParameter(PlayerAnimationHash.IsTakingDamage, true);
+
+        Vector3 horizontalDirection = Vector3.ProjectOnPlane(worldFacingDirection, Vector3.up);
+        if (horizontalDirection.sqrMagnitude <= 0.0001f)
+            return;
+
+        _immediateDamageFacingRotation =
+            Quaternion.LookRotation(horizontalDirection.normalized, Vector3.up)
+            * _animInitialLocalRotation;
+        _hasImmediateDamageFacing = true;
+
+        if (_anim != null)
+            _anim.transform.rotation = _immediateDamageFacingRotation;
+    }
+
+    internal void ClearImmediateDamageReaction()
+    {
+        SetBoolParameter(PlayerAnimationHash.IsTakingDamage, false);
+        ClearImmediateDamageFacing();
+    }
+
+    private void ClearImmediateDamageFacing()
+    {
+        _hasImmediateDamageFacing = false;
+
+        if (_anim != null)
+            _anim.transform.localRotation = _animInitialLocalRotation;
     }
 
     internal void SetActionLayerWeight(float weight)
@@ -432,6 +488,7 @@ public class PlayerAnimation : MonoBehaviour
 
     private void OnDestroy()
     {
+        ClearImmediateDamageFacing();
         StopSkillPresentation();
     }
 }

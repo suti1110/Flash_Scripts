@@ -48,6 +48,7 @@ public sealed class HomingBeamEffect : MonoBehaviour
     private float _lifetime;
     private float _speed;
     private float _turnRate;
+    private float _homingAcceleration;
     private float _hitDistance;
     private int _damage;
     private float _knockbackForce;
@@ -56,6 +57,7 @@ public sealed class HomingBeamEffect : MonoBehaviour
     private bool _hasHit;
     private bool _isStraightPhase;
     private float _elapsedTime;
+    private Vector3 _velocity;
     private Action<Vector3, Quaternion> _straightPhaseCompleted;
     private Material _coreMaterial;
     private Material _glowMaterial;
@@ -70,6 +72,7 @@ public sealed class HomingBeamEffect : MonoBehaviour
         float lifetime,
         float speed,
         float turnRate,
+        float homingAcceleration,
         float hitDistance,
         int damage,
         float knockbackForce,
@@ -82,6 +85,7 @@ public sealed class HomingBeamEffect : MonoBehaviour
         _lifetime = Mathf.Max(0.01f, lifetime);
         _speed = Mathf.Max(0.01f, speed);
         _turnRate = Mathf.Max(0f, turnRate);
+        _homingAcceleration = Mathf.Max(0.01f, homingAcceleration);
         _hitDistance = Mathf.Max(0.01f, hitDistance);
         _damage = Mathf.Max(0, damage);
         _knockbackForce = Mathf.Max(0f, knockbackForce);
@@ -89,6 +93,7 @@ public sealed class HomingBeamEffect : MonoBehaviour
         _isStraightPhase = false;
         _hasHit = false;
         _elapsedTime = 0f;
+        _velocity = transform.forward * _speed;
         _isInitialized = _caster != null && _target != null;
 
         if (_isInitialized)
@@ -178,20 +183,43 @@ public sealed class HomingBeamEffect : MonoBehaviour
             return;
         }
 
-        Vector3 desiredDirection = toTarget / distanceToTarget;
-        Vector3 currentDirection = transform.forward;
-        Vector3 direction = Vector3.RotateTowards(
+        Vector3 currentDirection =
+            _velocity.sqrMagnitude > Mathf.Epsilon ? _velocity.normalized : transform.forward;
+        Vector3 limitedTargetDirection = Vector3.RotateTowards(
             currentDirection,
-            desiredDirection,
+            toTarget / distanceToTarget,
             _turnRate * Mathf.Deg2Rad * Time.deltaTime,
             0f
         ).normalized;
 
-        bool canReachTarget = distanceToTarget <= _hitDistance + moveDistance;
+        // 목표를 즉시 향하도록 회전시키지 않고 속도 벡터에 제한된 가속도를 적용한다.
+        // 이 속도 벡터가 다음 프레임에도 유지되므로 급격한 방향 전환에서도 물리적인 관성이 남는다.
+        Vector3 desiredVelocity = limitedTargetDirection * _speed;
+        Vector3 steeredVelocity = Vector3.MoveTowards(
+            _velocity,
+            desiredVelocity,
+            _homingAcceleration * Time.deltaTime
+        );
+        _velocity = steeredVelocity.sqrMagnitude > Mathf.Epsilon
+            ? steeredVelocity.normalized * _speed
+            : currentDirection * _speed;
+
+        Vector3 direction = _velocity.normalized;
+        moveDistance = _velocity.magnitude * Time.deltaTime;
+
+        float forwardDistance = Vector3.Dot(toTarget, direction);
+        float lateralSqrDistance = Mathf.Max(
+            0f,
+            toTarget.sqrMagnitude - forwardDistance * forwardDistance
+        );
+        bool canReachTarget = forwardDistance >= 0f
+            && forwardDistance <= moveDistance + _hitDistance
+            && lateralSqrDistance <= _hitDistance * _hitDistance;
         float travelDistance = canReachTarget
-            ? Mathf.Min(moveDistance, distanceToTarget)
+            ? Mathf.Min(moveDistance, forwardDistance)
             : moveDistance;
         bool wasReflected = MoveWithMirrorReflections(direction, travelDistance);
+        _velocity = transform.forward * _velocity.magnitude;
 
         if (!wasReflected && canReachTarget)
         {

@@ -5,6 +5,8 @@ using UnityEngine;
 [RequireComponent(typeof(PlayerDeath))]
 public class PlayerDamage : NetworkBehaviour, IDamageable
 {
+    private const float BgmDuckDuration = 0.2f;
+
     [SerializeField]
     private SO_TakingDamage _takingDamage;
 
@@ -18,6 +20,10 @@ public class PlayerDamage : NetworkBehaviour, IDamageable
     private Rigidbody _rb;
 
     private IDeathable _death;
+    private PlayerCamera _playerCamera;
+    private AudioSource _localHitAudioSource;
+    private Quaternion _damageFacingRotation;
+    private bool _hasDamageFacingRotation;
 
     private readonly NetworkVariable<int> _hp = new();
 
@@ -38,6 +44,7 @@ public class PlayerDamage : NetworkBehaviour, IDamageable
     private void Awake()
     {
         _death = GetComponent<IDeathable>();
+        _playerCamera = GetComponent<PlayerCamera>();
         _playerStateMachine = GetComponent<Player>().StateMachine;
 
         _actionStateMachine.Started += HandleDamageStarted;
@@ -51,6 +58,19 @@ public class PlayerDamage : NetworkBehaviour, IDamageable
             return;
 
         _actionStateMachine.Tick(Time.deltaTime);
+    }
+
+    private void FixedUpdate()
+    {
+        if (
+            (IsSpawned && !IsOwner)
+            || _rb == null
+            || !_hasDamageFacingRotation
+            || !_playerStateMachine.IsInState<PlayerTakingDamageState>()
+        )
+            return;
+
+        _rb.MoveRotation(_damageFacingRotation);
     }
 
     public override void OnNetworkSpawn()
@@ -77,10 +97,17 @@ public class PlayerDamage : NetworkBehaviour, IDamageable
 
     public void TakeDamage(int damage, Vector3 knockback)
     {
-        if (!IsSpawned || !IsServer || damage <= 0)
-            return;
+        TakeDamageOnServer(damage, knockback);
+    }
 
-        ApplyDamageOnServer(damage, knockback, _takingDamage.ActionDuration);
+    // 서버가 확정한 피해가 즉시 리스폰을 발생시켰는지 호출자에게 돌려준다.
+    // IDamageable 공개 계약은 유지하면서 명중 표현이 리스폰 상태를 덮지 않게 한다.
+    internal bool TakeDamageOnServer(int damage, Vector3 knockback)
+    {
+        if (!IsSpawned || !IsServer || damage <= 0)
+            return false;
+
+        return ApplyDamageOnServer(damage, knockback, _takingDamage.ActionDuration);
     }
 
     // 서버에서 이미 검증된 맵 기믹은 RPC를 되돌아 거치지 않고 같은 대미지 규칙을 사용한다.
@@ -123,7 +150,7 @@ public class PlayerDamage : NetworkBehaviour, IDamageable
     [Rpc(SendTo.Owner)]
     private void ApplyDamageFeedbackRpc(Vector3 knockback, float hitStunDuration)
     {
-        AudioManager.SfxPlay(AudioManager.Instance.Container.Hit);
+        PlayLocalDamagePresentation();
 
         // 1. 피격 상태머신을 먼저 시작하여 TakingDamage 상태로 전이합니다.
         // 상태 전이를 통해 진행 중이던 스킬 취소 및 PlayerSkillMotion의 Kinematic이 먼저 안전하게 해제됩니다.
@@ -136,9 +163,54 @@ public class PlayerDamage : NetworkBehaviour, IDamageable
         // 2. Kinematic이 완전히 해제된 상태에서 속도를 초기화하고 넉백 Force를 적용합니다.
         if (_rb != null)
         {
+            FaceIncomingImpact(knockback);
             _rb.linearVelocity = Vector3.zero;
             _rb.AddForce(knockback, ForceMode.Impulse);
         }
+    }
+
+    private void FaceIncomingImpact(Vector3 knockback)
+    {
+        Vector3 facingDirection = Vector3.ProjectOnPlane(-knockback, Vector3.up);
+        if (facingDirection.sqrMagnitude <= 0.0001f)
+            return;
+
+        _damageFacingRotation = Quaternion.LookRotation(facingDirection.normalized, Vector3.up);
+        _hasDamageFacingRotation = true;
+        _rb.angularVelocity = Vector3.zero;
+        _rb.MoveRotation(_damageFacingRotation);
+    }
+
+    private void PlayLocalDamagePresentation()
+    {
+        if (_playerCamera != null)
+        {
+            _playerCamera.PlayDamageFeedback(
+                _takingDamage.CameraRippleStrength,
+                _takingDamage.CameraRippleDuration
+            );
+        }
+
+        AudioManager audioManager = AudioManager.Instance;
+        AudioClip hitClip = audioManager != null ? audioManager.Container?.Hit : null;
+        Camera camera = _playerCamera != null ? _playerCamera.MainCamera : null;
+        if (hitClip == null || camera == null)
+            return;
+
+        if (_localHitAudioSource == null)
+        {
+            _localHitAudioSource = camera.gameObject.AddComponent<AudioSource>();
+            AudioManager.ConfigureListenerSfxSource(_localHitAudioSource);
+        }
+
+        AudioManager.PlayListenerSfxWithBgmDuck(
+            hitClip,
+            _localHitAudioSource,
+            _takingDamage.HitSfxVolume,
+            _takingDamage.BgmDuckVolumeRatio,
+            BgmDuckDuration,
+            _takingDamage.BgmRecoveryDuration
+        );
     }
 
     private void HandleDamageStarted()
@@ -156,7 +228,10 @@ public class PlayerDamage : NetworkBehaviour, IDamageable
     private void HandleStateChanged(PlayerState previousState, PlayerState currentState)
     {
         if (currentState is not PlayerTakingDamageState)
+        {
+            _hasDamageFacingRotation = false;
             _actionStateMachine.Cancel();
+        }
     }
 
     private void OnValidate()

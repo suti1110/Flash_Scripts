@@ -3,6 +3,10 @@ using UnityEngine;
 
 public class PlayerNetworkDriver : NetworkBehaviour
 {
+#if UNITY_WEBGL && !UNITY_EDITOR
+    private bool _isCursorLockPending;
+#endif
+
     [SerializeField]
     private Object[] _ownerOnlyObjects;
 
@@ -25,15 +29,37 @@ public class PlayerNetworkDriver : NetworkBehaviour
         }
         else
         {
+#if UNITY_WEBGL && !UNITY_EDITOR
+            // Browsers only allow pointer lock in response to a user gesture.
+            _isCursorLockPending = true;
+#else
             Cursor.lockState = CursorLockMode.Locked;
             Cursor.visible = false;
+#endif
         }
     }
+
+#if UNITY_WEBGL && !UNITY_EDITOR
+    private void Update()
+    {
+        if (!_isCursorLockPending || !IsSpawned || !IsOwner || !Input.GetMouseButtonDown(0))
+        {
+            return;
+        }
+
+        Cursor.lockState = CursorLockMode.Locked;
+        Cursor.visible = false;
+        _isCursorLockPending = false;
+    }
+#endif
 
     public override void OnNetworkDespawn()
     {
         base.OnNetworkDespawn();
 
+#if UNITY_WEBGL && !UNITY_EDITOR
+        _isCursorLockPending = false;
+#endif
         Cursor.lockState = CursorLockMode.None;
         Cursor.visible = true;
     }

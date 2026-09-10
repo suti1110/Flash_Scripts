@@ -2,7 +2,11 @@ using System.Collections.Generic;
 using UnityEngine;
 
 [CreateAssetMenu(fileName = "DivinePunishment", menuName = "Player/Skill/Divine Punishment")]
-public sealed class SO_DivinePunishment : SO_Skill, ISkillNetworkEffect, ISkillCastIndicator
+public sealed class SO_DivinePunishment
+    : SO_Skill,
+        ISkillNetworkEffect,
+        ISkillCastIndicator,
+        ISkillCastAudioSettings
 {
     private const int StrikeEffectId = 0;
     private const float EffectPositionTolerance = 7f;
@@ -41,7 +45,27 @@ public sealed class SO_DivinePunishment : SO_Skill, ISkillNetworkEffect, ISkillC
     [SerializeField, InspectorName("공격 범위 Decal 프리팹")]
     private GameObject _castIndicatorPrefab;
 
+    [Header("카메라 및 사운드 연출")]
+    [SerializeField, InspectorName("카메라 흔들림 강도"), Min(0f)]
+    private float _cameraShakeStrength = 0.12f;
+
+    [SerializeField, InspectorName("카메라 흔들림 시간"), Min(0.01f)]
+    private float _cameraShakeDuration = 0.35f;
+
+    [SerializeField, InspectorName("시전 효과음 볼륨"), Range(0f, 1f)]
+    private float _castAudioVolume = 1f;
+
+    [SerializeField, InspectorName("시전 효과음 최소 거리"), Min(0.01f)]
+    private float _castAudioMinDistance = 8f;
+
+    [SerializeField, InspectorName("시전 효과음 최대 거리"), Min(0.01f)]
+    private float _castAudioMaxDistance = 70f;
+
     public GameObject CastIndicatorPrefab => _castIndicatorPrefab;
+    public bool PlayCastAudioOnSkillStart => false;
+    public float CastAudioVolume => _castAudioVolume;
+    public float CastAudioMinDistance => _castAudioMinDistance;
+    public float CastAudioMaxDistance => Mathf.Max(_castAudioMinDistance, _castAudioMaxDistance);
 
     public override bool CanExecute(in SkillExecutionContext context, out string failureMessage)
     {
@@ -60,6 +84,9 @@ public sealed class SO_DivinePunishment : SO_Skill, ISkillNetworkEffect, ISkillC
         {
             return;
         }
+
+        if (context.TryGetComponent(out PlayerCamera playerCamera))
+            playerCamera.PlayDivinePunishmentFeedback(_cameraShakeStrength, _cameraShakeDuration);
 
         context.RequestNetworkEffect(StrikeEffectId, strikePoint, Quaternion.identity);
     }
@@ -106,6 +133,14 @@ public sealed class SO_DivinePunishment : SO_Skill, ISkillNetworkEffect, ISkillC
     {
         if (effectId != StrikeEffectId || _strikeEffect == null)
             return;
+
+        AudioManager.SfxPlayAtPoint(
+            CastAudio,
+            position,
+            CastAudioVolume,
+            CastAudioMinDistance,
+            CastAudioMaxDistance
+        );
 
         GameObject strikeEffect = Instantiate(_strikeEffect, position, rotation);
         if (strikeEffect.TryGetComponent(out DivinePunishmentStrikeEffect scalableEffect))

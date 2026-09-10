@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Collections.Generic;
 using Unity.Netcode;
 using UnityEngine;
@@ -13,15 +14,36 @@ public class PlayerAttack : NetworkBehaviour, IAttackable
     [SerializeField]
     private int _maxTarget = 100;
     private Collider[] _targets;
-    private readonly Dictionary<Rigidbody, PlayerDamage> _damageableTargets = new();
+    private readonly Dictionary<Rigidbody, AttackTarget> _damageableTargets = new();
     private double _nextServerAttackTime;
 
-    private NetworkObject _netObject;
+    private Rigidbody _attackerBody;
+    private PlayerCamera _playerCamera;
+    private AudioSource _localHitConfirmAudioSource;
+    private Coroutine _hitStopRoutine;
+    private Camera _hitStopCamera;
+    private bool _isHitStopApplied;
+    private bool _cameraWasEnabled;
+    private bool _listenerWasPaused;
+
+    private readonly struct AttackTarget
+    {
+        public AttackTarget(PlayerDamage damageable, Vector3 hitPosition)
+        {
+            Damageable = damageable;
+            HitPosition = hitPosition;
+        }
+
+        public PlayerDamage Damageable { get; }
+        public Vector3 HitPosition { get; }
+    }
 
     private void Awake()
     {
         _targets = new Collider[_maxTarget];
         _playerStateMachine = GetComponent<Player>().StateMachine;
+        _attackerBody = GetComponent<Rigidbody>();
+        _playerCamera = GetComponent<PlayerCamera>();
 
         _actionStateMachine.Started += HandleAttackStarted;
         _actionStateMachine.ExecutionPointReached += AttackHit;
@@ -57,13 +79,8 @@ public class PlayerAttack : NetworkBehaviour, IAttackable
             return;
         }
 
-        if (_netObject != null || TryGetComponent(out _netObject))
-        {
-            if (!_netObject.IsSpawned || _netObject.IsOwner)
-            {
-                AudioManager.SfxPlay(AudioManager.Instance.Container.Attack);
-            }
-        }
+        AudioManager audioManager = AudioManager.Instance;
+        AudioManager.SfxPlay(audioManager != null ? audioManager.Container?.Attack : null);
     }
 
     private void AttackHit()
@@ -105,9 +122,14 @@ public class PlayerAttack : NetworkBehaviour, IAttackable
         int targetLayers =
             _attacking.TargetLayer | LayerMask.GetMask("Player", "OtherPlayer");
 
+        Vector3 horizontalVelocity = _attackerBody != null
+            ? Vector3.ProjectOnPlane(_attackerBody.linearVelocity, Vector3.up)
+            : Vector3.zero;
+        float effectiveRange = _attacking.GetEffectiveRange(horizontalVelocity.magnitude);
+
         int count = Physics.OverlapSphereNonAlloc(
             transform.position,
-            _attacking.Range,
+            effectiveRange,
             _targets,
             targetLayers
         );
@@ -127,16 +149,25 @@ public class PlayerAttack : NetworkBehaviour, IAttackable
 
             if (rb.TryGetComponent(out PlayerDamage damageable))
             {
-                _damageableTargets[rb] = damageable;
+                Vector3 attackerCenter = _attackerBody != null
+                    ? _attackerBody.worldCenterOfMass
+                    : transform.position + Vector3.up;
+                Vector3 hitPosition = Vector3.Lerp(attackerCenter, rb.worldCenterOfMass, 0.5f);
+                _damageableTargets[rb] = new AttackTarget(damageable, hitPosition);
             }
         }
+
+        bool hitAnyTarget = false;
 
         // 공격 범위 내의 모든 IDamageable 객체에 데미지와 넉백 적용
         foreach (var target in _damageableTargets)
         {
             Vector3 direction = (target.Key.transform.position - transform.position).normalized;
 
-            if (Vector3.Dot(transform.forward, direction) >= _attacking.RangeDot)
+            if (
+                Vector3.Dot(transform.forward, direction) >= _attacking.RangeDot
+                && target.Value.Damageable.IsAlive
+            )
             {
                 CustomRoomSettings roomSettings = RelayManager.Instance != null
                     ? RelayManager.Instance.CurrentRoomSettings
@@ -144,12 +175,206 @@ public class PlayerAttack : NetworkBehaviour, IAttackable
                 int attackDamage = RelayManager.Instance != null && RelayManager.Instance.IsCustomRoom
                     ? roomSettings.AttackDamage
                     : _attacking.Damage;
-                target.Value.TakeDamage(
+                bool wasLethal = target.Value.Damageable.TakeDamageOnServer(
                     attackDamage,
                     direction * (_attacking.KnockbackForce * roomSettings.KnockbackMultiplier)
                 );
+                hitAnyTarget = true;
+
+                if (IsSpawned)
+                    PlayAttackHitEffectRpc(
+                        new NetworkObjectReference(target.Value.Damageable.NetworkObject),
+                        target.Value.HitPosition,
+                        -direction,
+                        !wasLethal
+                    );
+                else
+                {
+                    if (!wasLethal)
+                    {
+                        target.Value.Damageable
+                            .GetComponent<PlayerAnimation>()
+                            ?.PlayImmediateDamageReaction(-direction);
+                    }
+                    PlayAttackHitEffect(target.Value.HitPosition, -direction);
+                }
             }
         }
+
+        if (!hitAnyTarget)
+            return;
+
+        if (IsSpawned)
+            PlayAttackerHitStopRpc();
+        else
+            PlayLocalHitStop();
+    }
+
+    [Rpc(SendTo.Everyone)]
+    private void PlayAttackHitEffectRpc(
+        NetworkObjectReference targetReference,
+        Vector3 position,
+        Vector3 direction,
+        bool playDamageReaction
+    )
+    {
+        if (!IsFinite(position) || !IsFinite(direction))
+            return;
+
+        if (
+            playDamageReaction
+            && targetReference.TryGet(out NetworkObject targetNetworkObject)
+            && targetNetworkObject.TryGetComponent(out PlayerAnimation targetAnimation)
+        )
+        {
+            targetAnimation.PlayImmediateDamageReaction(direction);
+        }
+
+        PlayAttackHitEffect(position, direction);
+    }
+
+    private void PlayAttackHitEffect(Vector3 position, Vector3 direction)
+    {
+        float delay = Mathf.Max(0f, _attacking.HitStopDelay);
+        if (delay <= 0f)
+        {
+            SpawnAttackHitEffect(position, direction);
+            return;
+        }
+
+        StartCoroutine(PlayAttackHitEffectAfterDelay(position, direction, delay));
+    }
+
+    private IEnumerator PlayAttackHitEffectAfterDelay(
+        Vector3 position,
+        Vector3 direction,
+        float delay
+    )
+    {
+        yield return new WaitForSecondsRealtime(delay);
+        SpawnAttackHitEffect(position, direction);
+    }
+
+    private void SpawnAttackHitEffect(Vector3 position, Vector3 direction)
+    {
+        GameObject hitEffectPrefab = _attacking.HitEffectPrefab;
+        if (hitEffectPrefab == null)
+            return;
+
+        Quaternion rotation = direction.sqrMagnitude > 0.0001f
+            ? Quaternion.LookRotation(direction.normalized)
+            : Quaternion.identity;
+        GameObject hitEffectObject = Instantiate(hitEffectPrefab, position, rotation);
+        if (hitEffectObject.TryGetComponent(out AttackHitEffect hitEffect))
+        {
+            float holdDuration = !IsSpawned || IsOwner ? _attacking.HitStopDuration : 0f;
+            hitEffect.Play(holdDuration);
+        }
+    }
+
+    [Rpc(SendTo.Owner)]
+    private void PlayAttackerHitStopRpc()
+    {
+        PlayLocalHitStop();
+    }
+
+    private void PlayLocalHitStop()
+    {
+        if (_hitStopRoutine != null)
+        {
+            StopCoroutine(_hitStopRoutine);
+            RestoreLocalHitStop();
+        }
+
+        _hitStopCamera = _playerCamera != null ? _playerCamera.MainCamera : null;
+        PlayLocalHitConfirmAudio();
+        _hitStopRoutine = StartCoroutine(HitStopRoutine(_attacking.HitStopDuration));
+    }
+
+    private IEnumerator HitStopRoutine(float duration)
+    {
+        // 피격 트리거가 실제 리액션 자세로 전환될 시간을 준 뒤 그 화면을 유지한다.
+        float delay = Mathf.Max(0f, _attacking.HitStopDelay);
+        if (delay > 0f)
+            yield return new WaitForSecondsRealtime(delay);
+
+        AttackHitEffect hitEffectPrefab = _attacking.HitEffectPrefab != null
+            ? _attacking.HitEffectPrefab.GetComponent<AttackHitEffect>()
+            : null;
+        float effectMovementDuration = hitEffectPrefab != null
+            ? hitEffectPrefab.MovementDuration
+            : 0f;
+        if (effectMovementDuration > 0f)
+            yield return new WaitForSecondsRealtime(effectMovementDuration);
+
+        // 전기가 0.05초 뻗어 정지한 프레임을 렌더한 뒤 그 충격 자세를 고정한다.
+        yield return new WaitForEndOfFrame();
+
+        _cameraWasEnabled = _hitStopCamera != null && _hitStopCamera.enabled;
+        _listenerWasPaused = AudioListener.pause;
+        _isHitStopApplied = true;
+
+        // 3D 카메라 화면을 RenderTexture로 캡처하여 UI 뒤 배경 레이어에 고정합니다.
+        if (_playerCamera != null)
+            _playerCamera.BeginFreezeFrame();
+
+        if (_hitStopCamera != null)
+            _hitStopCamera.enabled = false;
+
+        AudioManager.PauseSharedSfxForHitStop();
+        AudioListener.pause = true;
+
+        yield return new WaitForSecondsRealtime(Mathf.Max(0.01f, duration));
+
+        RestoreLocalHitStop();
+        _playerCamera?.PlayAttackHitFeedback(
+            _attacking.HitShakeStrength,
+            _attacking.HitShakeDuration
+        );
+        _hitStopRoutine = null;
+    }
+
+    private void RestoreLocalHitStop()
+    {
+        if (!_isHitStopApplied)
+            return;
+
+        if (_hitStopCamera != null)
+            _hitStopCamera.enabled = _cameraWasEnabled;
+
+        // 프리즈 프레임 표시를 종료하고 임시 텍스처를 반환합니다.
+        if (_playerCamera != null)
+            _playerCamera.EndFreezeFrame();
+
+        AudioListener.pause = _listenerWasPaused;
+        AudioManager.ResumeSharedSfxAfterHitStop();
+        _hitStopCamera = null;
+        _isHitStopApplied = false;
+    }
+
+    private void PlayLocalHitConfirmAudio()
+    {
+        AudioManager audioManager = AudioManager.Instance;
+        AudioClip hitClip = audioManager != null ? audioManager.Container?.Hit : null;
+        if (hitClip == null || _hitStopCamera == null)
+            return;
+
+        if (_localHitConfirmAudioSource == null)
+        {
+            _localHitConfirmAudioSource = _hitStopCamera.gameObject.AddComponent<AudioSource>();
+            AudioManager.ConfigureListenerSfxSource(_localHitConfirmAudioSource);
+            _localHitConfirmAudioSource.ignoreListenerPause = true;
+        }
+
+        _localHitConfirmAudioSource.Stop();
+        _localHitConfirmAudioSource.clip = hitClip;
+        _localHitConfirmAudioSource.volume = 1f;
+        _localHitConfirmAudioSource.Play();
+    }
+
+    private static bool IsFinite(Vector3 value)
+    {
+        return float.IsFinite(value.x) && float.IsFinite(value.y) && float.IsFinite(value.z);
     }
 
     private void HandleAttackCompleted()
@@ -172,8 +397,23 @@ public class PlayerAttack : NetworkBehaviour, IAttackable
         }
     }
 
+    private void OnDisable()
+    {
+        if (_hitStopRoutine != null)
+        {
+            StopCoroutine(_hitStopRoutine);
+            _hitStopRoutine = null;
+        }
+
+        RestoreLocalHitStop();
+    }
+
     public override void OnDestroy()
     {
+        if (_hitStopRoutine != null)
+            StopCoroutine(_hitStopRoutine);
+        RestoreLocalHitStop();
+
         _actionStateMachine.Started -= HandleAttackStarted;
         _actionStateMachine.ExecutionPointReached -= AttackHit;
         _actionStateMachine.Completed -= HandleAttackCompleted;

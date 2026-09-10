@@ -8,6 +8,9 @@ public sealed class PlayerTakingDamageState : PlayerState
 {
     private EnergyTracker _energyTracker;
 
+    // 피격 중에는 카메라 방향이 넉백 반대 방향으로 돌린 캐릭터 회전을 덮어쓰지 않는다.
+    public override bool UsesDetachedCameraRotation => true;
+
     internal override void Initialize(PlayerStateContext context)
     {
         _energyTracker = context.Player.GetComponent<EnergyTracker>();

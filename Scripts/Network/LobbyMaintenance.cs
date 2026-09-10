@@ -41,7 +41,7 @@ public sealed class LobbyMaintenance
     {
         while (version == _heartbeatVersion && _lobbySession.HasLobby && Application.isPlaying)
         {
-            await Task.Delay(25000);
+            await UnityRealtimeDelay.WaitAsync(25000);
 
             if (version != _heartbeatVersion || !_lobbySession.HasLobby || !Application.isPlaying)
                 break;
@@ -70,7 +70,7 @@ public sealed class LobbyMaintenance
     {
         while (version == _pollVersion && _lobbySession.HasLobby && Application.isPlaying)
         {
-            await Task.Delay(3000);
+            await UnityRealtimeDelay.WaitAsync(3000);
 
             if (version != _pollVersion || !_lobbySession.HasLobby || !Application.isPlaying)
                 break;

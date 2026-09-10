@@ -3,7 +3,7 @@ using UnityEngine;
 public interface IReflectable
 {
     public Vector3 LastVelocity { get; }
-    public void SetCameraRotation(Vector2 value);
+    public void TweenCameraRotation(Vector2 value);
 }
 
 public interface IAttackable

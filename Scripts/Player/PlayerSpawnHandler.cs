@@ -1,3 +1,4 @@
+using System.Collections;
 using Unity.Netcode;
 using Unity.Netcode.Components;
 using UnityEngine;
@@ -8,6 +9,7 @@ public class PlayerSpawnHandler : NetworkBehaviour
     private Vector3 _spawnPosition;
     private Quaternion _spawnRotation;
     private bool _hasSpawnPoint;
+    private Coroutine _motionResetRoutine;
 
     public override void OnNetworkSpawn()
     {
@@ -62,12 +64,48 @@ public class PlayerSpawnHandler : NetworkBehaviour
             transform.SetPositionAndRotation(spawnPosition, spawnRotation);
         }
 
-        if (TryGetComponent(out Rigidbody rb))
-        {
-            rb.linearVelocity = Vector3.zero; // 떨어지거나 날아가던 속도를 0으로!
-            rb.angularVelocity = Vector3.zero; // 빙글빙글 돌던 회전력도 0으로
-        }
+        ResetMotionAcrossPhysicsStep();
 
         EditorLog.Log($"[강제 이동 완료] 서버의 지시에 따라 {spawnPosition} 좌표로 안착했습니다!");
+    }
+
+    private void ResetMotionAcrossPhysicsStep()
+    {
+        if (!TryGetComponent(out Rigidbody rb))
+            return;
+
+        if (_motionResetRoutine != null)
+            StopCoroutine(_motionResetRoutine);
+
+        ClearMotion(rb);
+        _motionResetRoutine = StartCoroutine(ClearMotionAfterFixedUpdate(rb));
+    }
+
+    private IEnumerator ClearMotionAfterFixedUpdate(Rigidbody rb)
+    {
+        // 텔레포트와 같은 물리 스텝에 이미 누적된 이동 Force나 넉백까지 제거한다.
+        yield return new WaitForFixedUpdate();
+
+        if (rb != null)
+            ClearMotion(rb);
+
+        _motionResetRoutine = null;
+    }
+
+    private static void ClearMotion(Rigidbody rb)
+    {
+        rb.linearVelocity = Vector3.zero;
+        rb.angularVelocity = Vector3.zero;
+    }
+
+    public override void OnNetworkDespawn()
+    {
+        if (_motionResetRoutine != null)
+        {
+            StopCoroutine(_motionResetRoutine);
+            _motionResetRoutine = null;
+        }
+
+        base.OnNetworkDespawn();
     }
 }

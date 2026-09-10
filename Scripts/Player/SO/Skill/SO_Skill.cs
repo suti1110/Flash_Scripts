@@ -54,6 +54,14 @@ public interface ISkillCastIndicator
     );
 }
 
+public interface ISkillCastAudioSettings
+{
+    bool PlayCastAudioOnSkillStart { get; }
+    float CastAudioVolume { get; }
+    float CastAudioMinDistance { get; }
+    float CastAudioMaxDistance { get; }
+}
+
 public readonly struct SkillCastIndicatorData
 {
     public SkillCastIndicatorData(Vector3 position, Quaternion rotation, float radius)

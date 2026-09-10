@@ -6,6 +6,7 @@ public class PlayerDeath : NetworkBehaviour, IDeathable
     private static readonly int COLOR_CODE = Shader.PropertyToID("_BaseColor");
 
     private Player _player;
+    private PlayerAnimation _playerAnimation;
     private PlayerDamage _playerDamage;
     private PlayerSpawnHandler _spawnHandler;
     private PlayerMapInteraction _mapInteraction;
@@ -33,6 +34,7 @@ public class PlayerDeath : NetworkBehaviour, IDeathable
     private void Awake()
     {
         _player = GetComponent<Player>();
+        _playerAnimation = GetComponent<PlayerAnimation>();
         _playerDamage = GetComponent<PlayerDamage>();
         _spawnHandler = GetComponent<PlayerSpawnHandler>();
         _mapInteraction = GetComponent<PlayerMapInteraction>();
@@ -84,6 +86,10 @@ public class PlayerDeath : NetworkBehaviour, IDeathable
         PlaySmoke(deathPosition);
         PlayPlayerAudio(AudioManager.Instance?.Container?.Death, deathPosition);
         PlayPlayerAudio(AudioManager.Instance?.Container?.Respawn, transform.position);
+
+        // 치명타와 리스폰이 같은 네트워크 프레임에 처리되면 OwnerNetworkAnimator가
+        // 중간 피격 Bool을 전송하지 않을 수 있으므로 모든 화면에서 명시적으로 해제한다.
+        _playerAnimation?.ClearImmediateDamageReaction();
 
         if (IsOwner)
         {

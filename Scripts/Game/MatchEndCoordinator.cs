@@ -64,7 +64,7 @@ public sealed class MatchEndCoordinator
             NetworkManager.Singleton.Shutdown();
         }
 
-        await Task.Delay(500);
+        await UnityRealtimeDelay.WaitAsync(500);
         SceneManager.LoadScene(_mainMenuSceneName);
     }
 }

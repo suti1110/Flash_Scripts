@@ -41,7 +41,7 @@ public sealed class MatchFlowCoordinator
         int loadVersion
     )
     {
-        await Task.Delay(TimeSpan.FromSeconds(Mathf.Max(0f, delaySeconds)));
+        await UnityRealtimeDelay.WaitAsync(TimeSpan.FromSeconds(Mathf.Max(0f, delaySeconds)));
 
         if (loadVersion != _scheduledLoadVersion || !Application.isPlaying)
             throw new OperationCanceledException("The scheduled network scene load was cancelled.");
@@ -50,9 +50,7 @@ public sealed class MatchFlowCoordinator
         if (networkManager == null || !networkManager.IsServer || !networkManager.IsListening)
             throw new InvalidOperationException("The network server is not ready to load a scene.");
 
-        TaskCompletionSource<bool> completion = new(
-            TaskCreationOptions.RunContinuationsAsynchronously
-        );
+        TaskCompletionSource<bool> completion = new();
 
         void HandleLoadCompleted(
             string loadedSceneName,
@@ -90,7 +88,10 @@ public sealed class MatchFlowCoordinator
                     $"Failed to start the network scene load. Scene={sceneName}, Status={status}"
                 );
 
-            Task completedTask = await Task.WhenAny(completion.Task, Task.Delay(30000));
+            Task completedTask = await Task.WhenAny(
+                completion.Task,
+                UnityRealtimeDelay.WaitAsync(30000)
+            );
             if (completedTask != completion.Task)
                 throw new TimeoutException(
                     $"Timed out while loading the network scene {sceneName}."

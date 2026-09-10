@@ -22,6 +22,16 @@ public class SO_Blinking : SO_Skill, ISkillNetworkEffect
     [SerializeField]
     private GameObject _blickEffect;
 
+    [Header("카메라 연출")]
+    [SerializeField, InspectorName("시야각 확대량"), Min(0f)]
+    private float _cameraFieldOfViewIncrease = 18f;
+
+    [SerializeField, InspectorName("시야각 확대 시간"), Min(0.01f)]
+    private float _cameraZoomDuration = 0.1f;
+
+    [SerializeField, InspectorName("원래 시점 복귀 시간"), Min(0.01f)]
+    private float _cameraReturnDuration = 0.45f;
+
     public override void ExecuteSkill(in SkillExecutionContext context)
     {
         IEnergyTracker energyTracker = context.EnergyTracker;
@@ -42,6 +52,11 @@ public class SO_Blinking : SO_Skill, ISkillNetworkEffect
         }
 
         Vector3 blinkDirection = playerCamera.CameraPivot.forward;
+        playerCamera.PlayBlinkFeedback(
+            _cameraFieldOfViewIncrease,
+            _cameraZoomDuration,
+            _cameraReturnDuration
+        );
 
         context.RequestNetworkEffect(
             BlinkEffectId,

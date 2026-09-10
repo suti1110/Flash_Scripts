@@ -18,8 +18,31 @@ public class SO_Attacking : ScriptableObject
     [field: SerializeField]
     public float Range { get; private set; }
 
+    [field: Header("이동 속도 기반 공격 범위 보정")]
+    [field: SerializeField, Min(0f)]
+    public float MovementRangeCompensationTime { get; private set; } = 0.06f;
+
+    [field: SerializeField, Min(0f)]
+    public float MaximumMovementRangeBonus { get; private set; } = 1.5f;
+
     [field: SerializeField]
     public float KnockbackForce { get; private set; }
+
+    [field: Header("명중 연출")]
+    [field: SerializeField]
+    public GameObject HitEffectPrefab { get; private set; }
+
+    [field: SerializeField, Min(0.01f)]
+    public float HitStopDuration { get; private set; } = 0.1f;
+
+    [field: SerializeField, Min(0f)]
+    public float HitStopDelay { get; private set; } = 0.05f;
+
+    [field: SerializeField, Min(0f)]
+    public float HitShakeStrength { get; private set; } = 0.035f;
+
+    [field: SerializeField, Min(0.01f)]
+    public float HitShakeDuration { get; private set; } = 0.12f;
 
     // Forward Attack Range(Unit: Degree)
     [SerializeField, Range(10, 360)]
@@ -33,4 +56,13 @@ public class SO_Attacking : ScriptableObject
 
     [field: SerializeField]
     public LayerMask TargetLayer { get; private set; }
+
+    public float GetEffectiveRange(float horizontalSpeed)
+    {
+        float movementBonus = Mathf.Min(
+            Mathf.Max(0f, horizontalSpeed) * MovementRangeCompensationTime,
+            MaximumMovementRangeBonus
+        );
+        return Range + movementBonus;
+    }
 }

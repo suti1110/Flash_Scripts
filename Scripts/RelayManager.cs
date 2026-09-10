@@ -493,7 +493,17 @@ public class RelayManager : NetworkBehaviour
 
         try
         {
-            await _relayConnection.StartLocalHostAsync((ushort)_practicePort);
+            if (Application.platform == RuntimePlatform.WebGLPlayer)
+            {
+                // Browsers cannot listen on a loopback socket. Keep practice networked through
+                // Relay/WSS without publishing a Lobby, reserving one unused client slot.
+                await _servicesSession.EnsureInitializedAsync();
+                await _relayConnection.StartHostAsync(2);
+            }
+            else
+            {
+                await _relayConnection.StartLocalHostAsync((ushort)_practicePort);
+            }
 
             NetworkManager networkManager = NetworkManager.Singleton;
             if (networkManager == null || !networkManager.IsServer || !networkManager.IsListening)
@@ -804,7 +814,7 @@ public class RelayManager : NetworkBehaviour
             if (currentLobbyIsOlder)
                 return false;
 
-            await Task.Delay(UnityEngine.Random.Range(500, 1500));
+            await UnityRealtimeDelay.WaitAsync(UnityEngine.Random.Range(500, 1500));
 
             Lobby confirmedTarget;
             try
@@ -893,7 +903,7 @@ public class RelayManager : NetworkBehaviour
                 EditorLog.LogWarning(
                     $"Lobby 이전 재시도 {attempt}/{MigrationAttemptCount} 실패. 다시 시도합니다: {exception.Message}"
                 );
-                await Task.Delay(MigrationRetryDelayMilliseconds * attempt);
+                await UnityRealtimeDelay.WaitAsync(MigrationRetryDelayMilliseconds * attempt);
             }
         }
 
@@ -1205,7 +1215,7 @@ public class RelayManager : NetworkBehaviour
                 return;
             }
 
-            await Task.Delay(Mathf.Max(0, GameStartTerm) * 1000);
+            await UnityRealtimeDelay.WaitAsync(Mathf.Max(0, GameStartTerm) * 1000);
 
             if (_mapCatalog == null)
                 throw new InvalidOperationException(
@@ -1220,7 +1230,7 @@ public class RelayManager : NetworkBehaviour
             }
 
             StartModeSelectionClientRpc(selectedMode.Id, selectedMode.DisplayName);
-            await Task.Delay(
+            await UnityRealtimeDelay.WaitAsync(
                 TimeSpan.FromSeconds(
                     Mathf.Max(0f, ModeSelectionDuration)
                         + Mathf.Max(0f, ModeResultDisplayDuration)
@@ -1422,7 +1432,7 @@ public class RelayManager : NetworkBehaviour
         for (int remainingSeconds = countdownSeconds; remainingSeconds > 0; remainingSeconds--)
         {
             ShowCustomRoomStartCountdownClientRpc(remainingSeconds);
-            await Task.Delay(1000);
+            await UnityRealtimeDelay.WaitAsync(1000);
         }
 
         await _matchFlow.LoadNetworkSceneAsync(
@@ -1506,15 +1516,9 @@ public class RelayManager : NetworkBehaviour
         NetworkSceneManager networkSceneManager = networkManager.SceneManager;
         string targetSceneName = scene.name;
         var targetSceneHandle = scene.handle;
-        TaskCompletionSource<List<ulong>> completion = new(
-            TaskCreationOptions.RunContinuationsAsynchronously
-        );
-        TaskCompletionSource<bool> serverUnloadCompletion = new(
-            TaskCreationOptions.RunContinuationsAsynchronously
-        );
-        TaskCompletionSource<bool> allClientUnloadsCompleted = new(
-            TaskCreationOptions.RunContinuationsAsynchronously
-        );
+        TaskCompletionSource<List<ulong>> completion = new();
+        TaskCompletionSource<bool> serverUnloadCompletion = new();
+        TaskCompletionSource<bool> allClientUnloadsCompleted = new();
         HashSet<ulong> pendingClientIds = new(networkManager.ConnectedClientsIds);
 
         EditorLog.Log(
@@ -1589,7 +1593,7 @@ public class RelayManager : NetworkBehaviour
 
             // NGO가 사용하는 씬 이벤트 제한시간보다 먼저 포기하면 언로드 진행 중에 대기실이 노출될 수 있다.
             int timeoutSeconds = Mathf.Max(1, networkManager.NetworkConfig.LoadSceneTimeOut) + 5;
-            Task timeoutTask = Task.Delay(TimeSpan.FromSeconds(timeoutSeconds));
+            Task timeoutTask = UnityRealtimeDelay.WaitAsync(TimeSpan.FromSeconds(timeoutSeconds));
             Task serverCompletedTask = await Task.WhenAny(
                 serverUnloadCompletion.Task,
                 timeoutTask

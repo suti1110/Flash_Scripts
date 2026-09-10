@@ -64,9 +64,7 @@ public sealed class RelayConnection
             approvalPayload ?? string.Empty
         );
 
-        TaskCompletionSource<bool> connectionResult = new(
-            TaskCreationOptions.RunContinuationsAsynchronously
-        );
+        TaskCompletionSource<bool> connectionResult = new();
         string disconnectReason = string.Empty;
 
         void OnClientConnected(ulong clientId)
@@ -94,7 +92,7 @@ public sealed class RelayConnection
 
             Task completedTask = await Task.WhenAny(
                 connectionResult.Task,
-                Task.Delay(ClientConnectionTimeoutMilliseconds)
+                UnityRealtimeDelay.WaitAsync(ClientConnectionTimeoutMilliseconds)
             );
 
             if (completedTask != connectionResult.Task)
@@ -156,7 +154,7 @@ public sealed class RelayConnection
             }
 
             const int pollIntervalMilliseconds = 16;
-            await Task.Delay(pollIntervalMilliseconds);
+            await UnityRealtimeDelay.WaitAsync(pollIntervalMilliseconds);
             waitedMilliseconds += pollIntervalMilliseconds;
         }
     }

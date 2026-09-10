@@ -365,7 +365,23 @@ public class PlayerSkill : NetworkBehaviour, ISkill
         float indicatorRadius
     )
     {
-        AudioManager.SfxPlayAtPoint(skill.CastAudio, transform.position);
+        if (skill is ISkillCastAudioSettings audioSettings)
+        {
+            if (audioSettings.PlayCastAudioOnSkillStart)
+            {
+                AudioManager.SfxPlayAtPoint(
+                    skill.CastAudio,
+                    transform.position,
+                    audioSettings.CastAudioVolume,
+                    audioSettings.CastAudioMinDistance,
+                    audioSettings.CastAudioMaxDistance
+                );
+            }
+        }
+        else
+        {
+            AudioManager.SfxPlayAtPoint(skill.CastAudio, transform.position);
+        }
 
         if (_playerSkillMotion != null)
             _playerSkillMotion.StartPresentationMotion(skill.TranslateMotionToRigidbody);

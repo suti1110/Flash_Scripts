@@ -36,6 +36,10 @@ public sealed class SO_HomingBeam : SO_Skill, ISkillNetworkEffect, ISkillNetwork
     [SerializeField, InspectorName("초당 회전 각도"), Min(0f)]
     private float _turnRate = 360f;
 
+    [SerializeField, InspectorName("유도 가속도"), Min(0.01f)]
+    [Tooltip("현재 속도를 목표 방향의 속도로 변화시키는 최대 가속도입니다. 낮을수록 관성이 강합니다.")]
+    private float _homingAcceleration = 55f;
+
     [SerializeField, InspectorName("명중 거리"), Min(0.01f)]
     private float _hitDistance = 1.25f;
 
@@ -55,11 +59,30 @@ public sealed class SO_HomingBeam : SO_Skill, ISkillNetworkEffect, ISkillNetwork
     [SerializeField, InspectorName("유도 전환 효과음")]
     private AudioClip _homingAudio;
 
+    [Header("카메라 연출")]
+    [SerializeField, InspectorName("시야각 축소량"), Min(0f)]
+    private float _cameraFieldOfViewDecrease = 10f;
+
+    [SerializeField, InspectorName("화면 일렁임 강도"), Min(0f)]
+    private float _cameraRippleStrength = 1f;
+
+    [SerializeField, InspectorName("원래 시점 복귀 시간"), Min(0.01f)]
+    private float _cameraReturnDuration = 0.6f;
+
     public override void ExecuteSkill(in SkillExecutionContext context)
     {
         Transform caster = context.Transform;
         if (caster == null)
             return;
+
+        if (context.TryGetComponent(out PlayerCamera playerCamera))
+        {
+            playerCamera.PlayHomingBeamFeedback(
+                _cameraFieldOfViewDecrease,
+                _cameraRippleStrength,
+                _cameraReturnDuration
+            );
+        }
 
         Vector3 spawnPosition = caster.TransformPoint(_spawnOffset);
         context.RequestNetworkEffect(StraightEffectId, spawnPosition, caster.rotation);
@@ -222,6 +245,7 @@ public sealed class SO_HomingBeam : SO_Skill, ISkillNetworkEffect, ISkillNetwork
             _homingDuration,
             _speed,
             _turnRate,
+            _homingAcceleration,
             _hitDistance,
             _damage,
             _knockbackForce,
