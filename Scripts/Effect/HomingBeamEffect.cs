@@ -8,6 +8,7 @@ public sealed class HomingBeamEffect : MonoBehaviour
     private const string AdditiveShaderName = "Flash/Divine Punishment Additive";
     private const float TrailWidthScale = 0.35f;
     private const int MaxReflectionsPerFrame = 8;
+    private static readonly Dictionary<GameObject, HomingBeamEffect> ActiveSearchingBeams = new();
 
     [SerializeField, InspectorName("광선 중심 색상")]
     private Color _coreColor = new(0.8f, 1f, 1f, 1f);
@@ -39,6 +40,18 @@ public sealed class HomingBeamEffect : MonoBehaviour
     [SerializeField, InspectorName("명중 후 표시 시간"), Min(0f)]
     private float _impactVisibilityTime = 0.08f;
 
+    [SerializeField, InspectorName("자연 소멸 시간"), Min(0.01f)]
+    private float _dissolveDuration = 0.4f;
+
+    [SerializeField, InspectorName("자연 소멸 분산 거리"), Min(0f)]
+    private float _dissolveScatterDistance = 1.5f;
+
+    [SerializeField, InspectorName("명중 폭발 시간"), Min(0.01f)]
+    private float _impactExplosionDuration = 0.45f;
+
+    [SerializeField, InspectorName("명중 폭발 입자 수"), Range(8, 128)]
+    private int _impactParticleCount = 42;
+
     [SerializeField, InspectorName("명중 효과음")]
     private AudioClip _impactAudio;
 
@@ -56,15 +69,24 @@ public sealed class HomingBeamEffect : MonoBehaviour
     private bool _isInitialized;
     private bool _hasHit;
     private bool _isStraightPhase;
+    private bool _isSearchingPhase;
+    private bool _isEnding;
     private float _elapsedTime;
+    private float _endingElapsedTime;
+    private float _endingDuration;
     private Vector3 _velocity;
     private Action<Vector3, Quaternion> _straightPhaseCompleted;
+    private Func<Vector3, Quaternion, bool> _targetSearch;
     private Material _coreMaterial;
     private Material _glowMaterial;
     private TrailRenderer[] _trails;
     private readonly List<Vector3> _pathPoints = new();
     private Transform[] _coreSegments;
     private Transform[] _glowSegments;
+    private Transform[] _dissolveSegments;
+    private Vector3[] _dissolveStartPositions;
+    private Vector3[] _dissolveStartScales;
+    private Vector3[] _dissolveDirections;
 
     public void Initialize(
         GameObject caster,
@@ -91,6 +113,8 @@ public sealed class HomingBeamEffect : MonoBehaviour
         _knockbackForce = Mathf.Max(0f, knockbackForce);
         _canApplyDamage = canApplyDamage;
         _isStraightPhase = false;
+        _isSearchingPhase = false;
+        _isEnding = false;
         _hasHit = false;
         _elapsedTime = 0f;
         _velocity = transform.forward * _speed;
@@ -119,6 +143,8 @@ public sealed class HomingBeamEffect : MonoBehaviour
         _speed = Mathf.Max(0.01f, speed);
         _canApplyDamage = false;
         _isStraightPhase = true;
+        _isSearchingPhase = false;
+        _isEnding = false;
         _hasHit = false;
         _elapsedTime = 0f;
         _straightPhaseCompleted = phaseCompleted;
@@ -133,8 +159,60 @@ public sealed class HomingBeamEffect : MonoBehaviour
             Destroy(gameObject);
     }
 
+    public void InitializeSearching(
+        GameObject caster,
+        float lifetime,
+        float speed,
+        Func<Vector3, Quaternion, bool> targetSearch
+    )
+    {
+        _caster = caster;
+        _target = null;
+        _targetBody = null;
+        _lifetime = Mathf.Max(0.01f, lifetime);
+        _speed = Mathf.Max(0.01f, speed);
+        _canApplyDamage = false;
+        _isStraightPhase = true;
+        _isSearchingPhase = true;
+        _isEnding = false;
+        _hasHit = false;
+        _elapsedTime = 0f;
+        _targetSearch = targetSearch;
+        _isInitialized = _caster != null;
+
+        if (!_isInitialized)
+        {
+            Destroy(gameObject);
+            return;
+        }
+
+        RegisterSearchingBeam();
+        CreateVisuals();
+        InitializeVolumePath();
+    }
+
+    public static void StopActiveSearchingBeam(GameObject caster)
+    {
+        if (
+            caster == null
+            || !ActiveSearchingBeams.TryGetValue(caster, out HomingBeamEffect effect)
+            || effect == null
+        )
+        {
+            return;
+        }
+
+        effect.StopForHomingTransition();
+    }
+
     private void Update()
     {
+        if (_isEnding)
+        {
+            UpdateEnding();
+            return;
+        }
+
         if (_hasHit)
             return;
 
@@ -152,20 +230,36 @@ public sealed class HomingBeamEffect : MonoBehaviour
             _elapsedTime += Time.deltaTime;
 
             if (_elapsedTime >= _lifetime)
-                CompleteStraightPhase();
+            {
+                if (_isSearchingPhase)
+                    BeginDissolve();
+                else
+                    CompleteStraightPhase();
+                return;
+            }
+
+            if (
+                _isSearchingPhase
+                && _targetSearch != null
+                && _targetSearch.Invoke(transform.position, transform.rotation)
+            )
+            {
+                StopForHomingTransition();
+                return;
+            }
             return;
         }
 
         _elapsedTime += Time.deltaTime;
         if (_elapsedTime >= _lifetime)
         {
-            Destroy(gameObject);
+            BeginDissolve();
             return;
         }
 
         if (_target == null)
         {
-            Destroy(gameObject);
+            BeginDissolve();
             return;
         }
 
@@ -300,6 +394,120 @@ public sealed class HomingBeamEffect : MonoBehaviour
         Destroy(gameObject);
     }
 
+    private void RegisterSearchingBeam()
+    {
+        if (_caster == null)
+            return;
+
+        if (
+            ActiveSearchingBeams.TryGetValue(_caster, out HomingBeamEffect previous)
+            && previous != null
+            && previous != this
+        )
+        {
+            Destroy(previous.gameObject);
+        }
+
+        ActiveSearchingBeams[_caster] = this;
+    }
+
+    private void UnregisterSearchingBeam()
+    {
+        if (
+            _caster != null
+            && ActiveSearchingBeams.TryGetValue(_caster, out HomingBeamEffect current)
+            && current == this
+        )
+        {
+            ActiveSearchingBeams.Remove(_caster);
+        }
+    }
+
+    private void StopForHomingTransition()
+    {
+        _targetSearch = null;
+        UnregisterSearchingBeam();
+        Destroy(gameObject);
+    }
+
+    private void BeginDissolve()
+    {
+        if (_isEnding)
+            return;
+
+        _isEnding = true;
+        _isInitialized = false;
+        _targetSearch = null;
+        _endingElapsedTime = 0f;
+        _endingDuration = Mathf.Max(0.01f, _dissolveDuration);
+        UnregisterSearchingBeam();
+        StopTrailEmission();
+        PrepareDissolveSegments();
+    }
+
+    private void UpdateEnding()
+    {
+        _endingElapsedTime += Time.deltaTime;
+        float progress = Mathf.Clamp01(_endingElapsedTime / _endingDuration);
+
+        if (_dissolveSegments != null)
+        {
+            float scatteredProgress = 1f - (1f - progress) * (1f - progress);
+            for (int i = 0; i < _dissolveSegments.Length; i++)
+            {
+                Transform segment = _dissolveSegments[i];
+                if (segment == null)
+                    continue;
+
+                segment.position =
+                    _dissolveStartPositions[i]
+                    + _dissolveDirections[i] * (_dissolveScatterDistance * scatteredProgress);
+                segment.localScale = Vector3.Lerp(
+                    _dissolveStartScales[i],
+                    Vector3.zero,
+                    progress
+                );
+            }
+
+            SetVisualAlpha(1f - progress);
+        }
+
+        if (_endingElapsedTime >= _endingDuration)
+            Destroy(gameObject);
+    }
+
+    private void PrepareDissolveSegments()
+    {
+        List<Transform> segments = new();
+        AddActiveSegments(_coreSegments, segments);
+        AddActiveSegments(_glowSegments, segments);
+
+        _dissolveSegments = segments.ToArray();
+        _dissolveStartPositions = new Vector3[_dissolveSegments.Length];
+        _dissolveStartScales = new Vector3[_dissolveSegments.Length];
+        _dissolveDirections = new Vector3[_dissolveSegments.Length];
+
+        for (int i = 0; i < _dissolveSegments.Length; i++)
+        {
+            Transform segment = _dissolveSegments[i];
+            _dissolveStartPositions[i] = segment.position;
+            _dissolveStartScales[i] = segment.localScale;
+            _dissolveDirections[i] = UnityEngine.Random.onUnitSphere;
+        }
+    }
+
+    private static void AddActiveSegments(Transform[] source, List<Transform> destination)
+    {
+        if (source == null)
+            return;
+
+        foreach (Transform segment in source)
+        {
+            if (segment != null && segment.gameObject.activeSelf)
+                destination.Add(segment);
+        }
+    }
+
     private void HitTarget(Vector3 toTarget)
     {
         _hasHit = true;
@@ -312,16 +520,126 @@ public sealed class HomingBeamEffect : MonoBehaviour
             damageable.TakeDamage(_damage, knockbackDirection * _knockbackForce);
         }
 
-        if (_trails != null)
-        {
-            foreach (TrailRenderer trail in _trails)
-            {
-                if (trail != null)
-                    trail.emitting = false;
-            }
-        }
+        StopTrailEmission();
+        SetVolumeSegmentsActive(false);
+        CreateImpactExplosion();
+        _isEnding = true;
+        _endingElapsedTime = 0f;
+        _endingDuration = Mathf.Max(
+            _impactVisibilityTime,
+            Mathf.Max(_impactExplosionDuration, Time.deltaTime)
+        );
+    }
 
-        Destroy(gameObject, Mathf.Max(_impactVisibilityTime, Time.deltaTime));
+    private void StopTrailEmission()
+    {
+        if (_trails == null)
+            return;
+
+        foreach (TrailRenderer trail in _trails)
+        {
+            if (trail != null)
+                trail.emitting = false;
+        }
+    }
+
+    private void SetVolumeSegmentsActive(bool isActive)
+    {
+        SetSegmentsActive(_coreSegments, isActive);
+        SetSegmentsActive(_glowSegments, isActive);
+    }
+
+    private static void SetSegmentsActive(Transform[] segments, bool isActive)
+    {
+        if (segments == null)
+            return;
+
+        foreach (Transform segment in segments)
+        {
+            if (segment != null)
+                segment.gameObject.SetActive(isActive);
+        }
+    }
+
+    private void CreateImpactExplosion()
+    {
+        GameObject explosionObject = new("BlueImpactExplosion");
+        explosionObject.layer = gameObject.layer;
+        explosionObject.transform.SetParent(transform, false);
+
+        ParticleSystem particles = explosionObject.AddComponent<ParticleSystem>();
+        ParticleSystem.MainModule main = particles.main;
+        main.duration = Mathf.Max(0.01f, _impactExplosionDuration);
+        main.loop = false;
+        main.playOnAwake = false;
+        main.simulationSpace = ParticleSystemSimulationSpace.World;
+        main.startLifetime = new ParticleSystem.MinMaxCurve(
+            _impactExplosionDuration * 0.45f,
+            _impactExplosionDuration
+        );
+        main.startSpeed = new ParticleSystem.MinMaxCurve(7f, 16f);
+        main.startSize = new ParticleSystem.MinMaxCurve(0.12f, 0.42f);
+        main.startColor = new ParticleSystem.MinMaxGradient(_glowColor, _coreColor);
+        main.maxParticles = Mathf.Max(8, _impactParticleCount);
+
+        ParticleSystem.EmissionModule emission = particles.emission;
+        emission.rateOverTime = 0f;
+        emission.SetBursts(
+            new[]
+            {
+                new ParticleSystem.Burst(
+                    0f,
+                    (short)Mathf.Clamp(_impactParticleCount, 8, short.MaxValue)
+                ),
+            }
+        );
+
+        ParticleSystem.ShapeModule shape = particles.shape;
+        shape.shapeType = ParticleSystemShapeType.Sphere;
+        shape.radius = Mathf.Max(0.05f, _coreWidth * 0.5f);
+
+        ParticleSystem.ColorOverLifetimeModule colorOverLifetime = particles.colorOverLifetime;
+        colorOverLifetime.enabled = true;
+        Gradient fadeGradient = new();
+        fadeGradient.SetKeys(
+            new[]
+            {
+                new GradientColorKey(Color.white, 0f),
+                new GradientColorKey(new Color(0.25f, 0.7f, 1f), 1f),
+            },
+            new[]
+            {
+                new GradientAlphaKey(1f, 0f),
+                new GradientAlphaKey(0.75f, 0.35f),
+                new GradientAlphaKey(0f, 1f),
+            }
+        );
+        colorOverLifetime.color = fadeGradient;
+
+        ParticleSystemRenderer particleRenderer =
+            explosionObject.GetComponent<ParticleSystemRenderer>();
+        particleRenderer.renderMode = ParticleSystemRenderMode.Billboard;
+        particleRenderer.sharedMaterial = _glowMaterial;
+        particleRenderer.sortingOrder = 2;
+        particles.Play();
+    }
+
+    private void SetVisualAlpha(float alphaMultiplier)
+    {
+        SetMaterialColor(_coreMaterial, _coreColor, alphaMultiplier);
+        SetMaterialColor(_glowMaterial, _glowColor, alphaMultiplier);
+    }
+
+    private static void SetMaterialColor(Material material, Color color, float alphaMultiplier)
+    {
+        if (material == null)
+            return;
+
+        color.a *= Mathf.Clamp01(alphaMultiplier);
+        if (material.HasProperty("_BaseColor"))
+            material.SetColor("_BaseColor", color);
+        if (material.HasProperty("_Color"))
+            material.SetColor("_Color", color);
     }
 
     private void CreateVisuals()
@@ -543,6 +861,8 @@ public sealed class HomingBeamEffect : MonoBehaviour
 
     private void OnDestroy()
     {
+        UnregisterSearchingBeam();
+
         if (_coreMaterial != null)
             Destroy(_coreMaterial);
         if (_glowMaterial != null)

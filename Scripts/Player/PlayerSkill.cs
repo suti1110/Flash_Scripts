@@ -7,6 +7,7 @@ public interface ISkill
     event Action OnSkillFinished;
     void UseSkill(int skillIndex);
     PlayerInputType GetCurrentSkillConstraints();
+    SkillCameraInfluenceAxes GetCurrentCameraInfluenceAxes();
     SO_Skill CurrentSkill { get; }
 }
 
@@ -22,12 +23,14 @@ public class PlayerSkill : NetworkBehaviour, ISkill
     private PlayerAnimation _playerAnimation;
     private PlayerSkillMotion _playerSkillMotion;
     private PlayerStateMachine _playerStateMachine;
+    private PlayerCamera _playerCamera;
     private Action<int, Vector3, Quaternion> _networkEffectRequester;
     private Action<int, GameObject, Vector3, Quaternion> _networkTargetEffectRequester;
 
     private SO_Skill _curCastingSkill;
     public SO_Skill CurrentSkill => _curCastingSkill;
     private readonly PlayerActionStateMachine _actionStateMachine = new();
+    private bool _hasExecutedCurrentSkill;
     private SkillCastIndicatorData _preparedCastIndicator;
     private bool _hasPreparedCastIndicator;
     private GameObject _activeCastIndicator;
@@ -37,6 +40,7 @@ public class PlayerSkill : NetworkBehaviour, ISkill
         _energyTracker = GetComponent<EnergyTracker>();
         _playerAnimation = GetComponent<PlayerAnimation>();
         _playerSkillMotion = GetComponent<PlayerSkillMotion>();
+        _playerCamera = GetComponent<PlayerCamera>();
         _playerStateMachine = GetComponent<Player>().StateMachine;
         _networkEffectRequester = RequestSpawnEffect;
         _networkTargetEffectRequester = RequestSpawnTargetEffect;
@@ -127,6 +131,7 @@ public class PlayerSkill : NetworkBehaviour, ISkill
         else
         {
             _curCastingSkill = skill;
+            _hasExecutedCurrentSkill = false;
             _actionStateMachine.Start(skill.ActionDuration, skill.ExecuteTime);
         }
     }
@@ -138,12 +143,27 @@ public class PlayerSkill : NetworkBehaviour, ISkill
         return _curCastingSkill != null ? _curCastingSkill.ConstrainedInputs : PlayerInputType.None;
     }
 
+    public SkillCameraInfluenceAxes GetCurrentCameraInfluenceAxes()
+    {
+        return _curCastingSkill != null
+            ? _curCastingSkill.GetCameraInfluenceAxes(_hasExecutedCurrentSkill)
+            : SkillCameraInfluenceAxes.None;
+    }
+
     private void HandleSkillStarted()
     {
         if (!_playerStateMachine.TryChangeState<PlayerUsingSkillState>())
         {
             _actionStateMachine.Cancel();
             return;
+        }
+
+        if (_curCastingSkill != null)
+        {
+            _playerCamera?.SetSkillCameraView(
+                _curCastingSkill.CameraViewMode,
+                _curCastingSkill.CameraBlendDuration
+            );
         }
 
         bool setKinematic = _curCastingSkill != null && _curCastingSkill.IsKinematicDuringSkill;
@@ -189,17 +209,21 @@ public class PlayerSkill : NetworkBehaviour, ISkill
 
     private void HandleSkillCompleted()
     {
+        RestoreDefaultCameraView();
         StopSkillPresentation();
         FinishSkill();
         _curCastingSkill = null;
+        _hasExecutedCurrentSkill = false;
         ResetPreparedCastIndicator();
     }
 
     private void HandleSkillCancelled()
     {
+        RestoreDefaultCameraView();
         StopSkillPresentation();
         OnSkillFinished?.Invoke();
         _curCastingSkill = null;
+        _hasExecutedCurrentSkill = false;
         ResetPreparedCastIndicator();
     }
 
@@ -211,12 +235,22 @@ public class PlayerSkill : NetworkBehaviour, ISkill
         OnSkillFinished?.Invoke();
     }
 
+    private void RestoreDefaultCameraView()
+    {
+        float blendDuration = _curCastingSkill != null
+            ? _curCastingSkill.CameraBlendDuration
+            : 0f;
+        _playerCamera?.SetSkillCameraView(SkillCameraViewMode.ThirdPerson, blendDuration);
+    }
+
     private void SkillExecute()
     {
         if ((IsSpawned && !IsOwner) || _curCastingSkill == null)
             return;
 
         StopCastIndicator();
+
+        _hasExecutedCurrentSkill = true;
 
         SkillExecutionContext context = CreateExecutionContext(_hasPreparedCastIndicator);
         _curCastingSkill.ExecuteSkill(context);
@@ -293,12 +327,7 @@ public class PlayerSkill : NetworkBehaviour, ISkill
             return;
 
         int networkId = _skillSet.GetSkillNetworkId(skill);
-        if (
-            networkId <= 0
-            || target == null
-            || !IsFinite(position)
-            || !IsFinite(rotation)
-        )
+        if (networkId <= 0 || target == null || !IsFinite(position) || !IsFinite(rotation))
         {
             return;
         }
@@ -523,13 +552,7 @@ public class PlayerSkill : NetworkBehaviour, ISkill
             return;
         }
 
-        PlayTargetEffect(
-            networkId,
-            effectId,
-            targetNetworkObject.gameObject,
-            position,
-            rotation
-        );
+        PlayTargetEffect(networkId, effectId, targetNetworkObject.gameObject, position, rotation);
     }
 
     private void PlayTargetEffect(
@@ -552,13 +575,7 @@ public class PlayerSkill : NetworkBehaviour, ISkill
             )
         )
         {
-            targetEffect.PlayNetworkTargetEffect(
-                gameObject,
-                target,
-                effectId,
-                position,
-                rotation
-            );
+            targetEffect.PlayNetworkTargetEffect(gameObject, target, effectId, position, rotation);
         }
     }
 

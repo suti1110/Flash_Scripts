@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Unity.Netcode;
 using Unity.Services.Lobbies;
@@ -106,6 +107,10 @@ public class RelayManager : NetworkBehaviour
     private RelayConnection _relayConnection;
     private MatchFlowCoordinator _matchFlow;
 
+    // Cancel 정리가 끝나기 전에 새 매치메이킹이 시작되면 삭제 중인 Lobby를 다시 찾을 수 있다.
+    // Lobby 생성/참가와 이탈을 하나의 전환 구간으로 직렬화하여 두 작업이 겹치지 않게 한다.
+    private readonly SemaphoreSlim _matchmakingTransition = new(1, 1);
+
     private bool _isIntentionalDisconnect;
     private bool _networkCallbacksRegistered;
     private bool _isStartingGame;
@@ -152,6 +157,19 @@ public class RelayManager : NetworkBehaviour
 
     public async Task StartMatchmaking(int targetPlayerCount)
     {
+        await _matchmakingTransition.WaitAsync();
+        try
+        {
+            await StartMatchmakingCoreAsync(targetPlayerCount);
+        }
+        finally
+        {
+            _matchmakingTransition.Release();
+        }
+    }
+
+    private async Task StartMatchmakingCoreAsync(int targetPlayerCount)
+    {
         try
         {
             if (IsPracticeMode)
@@ -182,10 +200,24 @@ public class RelayManager : NetworkBehaviour
         }
         catch (Exception exception)
         {
+            // Lobby 참가까지 성공한 뒤 Relay 접속이 실패할 수 있다. 이때 가입 흔적을 남기면
+            // 죽은 Relay 코드를 가진 방이 인원만 찬 채 Query에 계속 노출되므로 함께 정리한다.
+            SetIntentionalDisconnect();
+            StopLobbyMaintenance();
+            await ReleaseCurrentLobbyAsync();
+
+            try
+            {
+                await _relayConnection.ShutdownAsync();
+            }
+            catch (Exception cleanupException)
+            {
+                EditorLog.LogWarning($"매치메이킹 실패 후 네트워크 정리 실패: {cleanupException}");
+            }
+
             MatchingState = MatchingState.None;
             ResetPracticeState();
             EditorLog.LogError($"매치메이킹 실패: {exception}");
-            _relayConnection.Shutdown();
         }
     }
 
@@ -609,37 +641,41 @@ public class RelayManager : NetworkBehaviour
 
     public async Task LeaveLobby()
     {
+        await _matchmakingTransition.WaitAsync();
+        try
+        {
+            await LeaveLobbyCoreAsync();
+        }
+        finally
+        {
+            _matchmakingTransition.Release();
+        }
+    }
+
+    private async Task LeaveLobbyCoreAsync()
+    {
         bool wasCustomRoom = IsCustomRoom;
         SetIntentionalDisconnect();
         StopLobbyMaintenance();
-        MatchingState = MatchingState.None;
 
-        if (_lobbySession.HasLobby)
+        try
         {
-            try
-            {
-                await _lobbySession.RemoveLocalPlayerAsync();
-                EditorLog.Log("Lobby에서 나갔습니다.");
-            }
-            catch (LobbyServiceException exception)
-            {
-                if (exception.Reason == LobbyExceptionReason.LobbyNotFound)
-                {
-                    _lobbySession.Clear();
-                    EditorLog.Log("방이 이미 삭제되어 로컬 Lobby 상태만 정리합니다.");
-                }
-                else
-                {
-                    EditorLog.LogError($"Lobby 나가기 실패: {exception}");
-                }
-            }
+            // Host의 Cancel은 자신만 제거하는 요청에 의존하지 않고 Lobby를 명시적으로 삭제한다.
+            // 참가자는 기존처럼 자신의 Player만 제거한다.
+            await ReleaseCurrentLobbyAsync();
+            await _relayConnection.ShutdownAsync();
+            EditorLog.Log("Lobby와 네트워크 세션을 종료했습니다.");
         }
+        finally
+        {
+            // 새 매치메이킹 버튼은 Lobby 삭제와 NetworkManager 종료가 모두 끝난 뒤에만
+            // None 상태를 관찰하므로 이전 방을 즉시 다시 조회할 수 없다.
+            ResetPracticeState();
+            MatchingState = MatchingState.None;
 
-        _relayConnection.Shutdown();
-        ResetPracticeState();
-
-        if (wasCustomRoom)
-            CustomRoomLeft?.Invoke();
+            if (wasCustomRoom)
+                CustomRoomLeft?.Invoke();
+        }
     }
 
     public async Task DeleteLobby()
@@ -738,7 +774,8 @@ public class RelayManager : NetworkBehaviour
         if (updatedLobby.AvailableSlots <= 0)
         {
             EditorLog.LogWarning("방이 막 꽉 찼습니다. 다시 검색합니다...");
-            await StartMatchmaking(MaxPlayers);
+            // 이미 매치메이킹 전환 잠금을 보유한 내부 재검색이므로 공개 진입점을 다시 호출하지 않는다.
+            await StartMatchmakingCoreAsync(MaxPlayers);
             return;
         }
 

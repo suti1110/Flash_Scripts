@@ -46,7 +46,7 @@ public sealed class PendulumMace : MonoBehaviour
         if (_swingLoopAudio != null)
         {
             _swingAudioSource = gameObject.AddComponent<AudioSource>();
-            AudioManager.ConfigureSpatialSfxSource(_swingAudioSource, 2f, 35f);
+            AudioManager.ConfigureSpatialSfxSource(_swingAudioSource, 2f, 40f);
             _swingAudioSource.clip = _swingLoopAudio;
             _swingAudioSource.loop = true;
             _swingAudioSource.volume = _swingVolume;

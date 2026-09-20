@@ -16,6 +16,31 @@ public enum SkillExitCondition
     Custom,
 }
 
+[Flags]
+public enum SkillCameraInfluenceAxes
+{
+    None = 0,
+    X = 1 << 0,
+    Y = 1 << 1,
+    Z = 1 << 2,
+    All = X | Y | Z,
+}
+
+[Flags]
+public enum SkillCameraControlPhase
+{
+    None = 0,
+    BeforeExecution = 1 << 0,
+    AfterExecution = 1 << 1,
+    All = BeforeExecution | AfterExecution,
+}
+
+public enum SkillCameraViewMode
+{
+    ThirdPerson,
+    FirstPerson,
+}
+
 public interface ISkillNetworkEffect
 {
     bool IsNetworkEffectRequestValid(
@@ -216,13 +241,38 @@ public abstract class SO_Skill : ScriptableObject
     ]
     public bool TranslateMotionToRigidbody { get; private set; } = true;
 
+    [field: SerializeField, InspectorName("시전 중 카메라 영향 축")]
+    [field: Tooltip(
+        "스킬 애니메이션 진행 중 카메라 회전이 플레이어에게 적용될 회전축입니다. 선택하지 않은 축은 마지막 회전을 유지합니다."
+    )]
+    public SkillCameraInfluenceAxes CameraInfluenceAxes { get; private set; } =
+        SkillCameraInfluenceAxes.Y;
+
+    [field: SerializeField, InspectorName("카메라 제어 구간")]
+    [field: NaughtyAttributes.ShowIf(nameof(HasCameraInfluenceAxes))]
+    [field: Tooltip(
+        "스킬 Execute 순간을 기준으로 카메라가 플레이어 회전을 제어할 구간입니다. 선택하지 않은 구간에는 마지막 회전이 동결됩니다."
+    )]
+    public SkillCameraControlPhase CameraControlPhases { get; private set; } =
+        SkillCameraControlPhase.All;
+
+    private bool HasCameraInfluenceAxes => CameraInfluenceAxes != SkillCameraInfluenceAxes.None;
+
+    [field: SerializeField, InspectorName("스킬 카메라 시점")]
+    [field: Tooltip("스킬 애니메이션이 진행되는 동안 로컬 플레이어에게 적용할 카메라 시점입니다.")]
+    public SkillCameraViewMode CameraViewMode { get; private set; } =
+        SkillCameraViewMode.ThirdPerson;
+
     [field:
         SerializeField,
-        InspectorName("카메라 회전 분리 (Detach Camera Rotation)"),
-        Tooltip("애니메이션 재생 중 플레이어의 회전이 카메라 회전을 따라가지 않도록 고정합니다."),
-        NaughtyAttributes.HideIf("AnimationKind", SkillAnimationKind.None)
+        Min(0f),
+        InspectorName("카메라 전환 시간"),
+        NaughtyAttributes.ShowIf(nameof(UsesCameraViewOverride))
     ]
-    public bool DetachCameraRotationDuringSkill { get; private set; } = true;
+    [field: Tooltip("스킬 카메라 시점으로 들어가고 기본 시점으로 복귀할 때 사용할 블렌드 시간입니다.")]
+    public float CameraBlendDuration { get; private set; } = 0.1f;
+
+    private bool UsesCameraViewOverride => CameraViewMode != SkillCameraViewMode.ThirdPerson;
 
     public float ActionDuration =>
         ExitCondition == SkillExitCondition.AnimationExit
@@ -252,6 +302,17 @@ public abstract class SO_Skill : ScriptableObject
     /// </summary>
     [field: SerializeField]
     public PlayerInputType ConstrainedInputs { get; private set; } = PlayerInputType.All;
+
+    public SkillCameraInfluenceAxes GetCameraInfluenceAxes(bool hasExecuted)
+    {
+        SkillCameraControlPhase currentPhase = hasExecuted
+            ? SkillCameraControlPhase.AfterExecution
+            : SkillCameraControlPhase.BeforeExecution;
+
+        return (CameraControlPhases & currentPhase) != 0
+            ? CameraInfluenceAxes
+            : SkillCameraInfluenceAxes.None;
+    }
 
     protected virtual void OnValidate()
     {

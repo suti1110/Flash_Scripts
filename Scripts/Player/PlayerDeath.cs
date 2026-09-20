@@ -53,7 +53,8 @@ public class PlayerDeath : NetworkBehaviour, IDeathable
         }
 
         _isDeathResolved = true;
-        _mapInteraction?.DropHeldObject();
+        if (_mapInteraction)
+            _mapInteraction.DropHeldObject();
 
         bool eliminatesPlayer =
             _deathModeFilter != null && _deathModeFilter.IsAllowed(GameManager.Instance.GameKind);
@@ -89,7 +90,8 @@ public class PlayerDeath : NetworkBehaviour, IDeathable
 
         // 치명타와 리스폰이 같은 네트워크 프레임에 처리되면 OwnerNetworkAnimator가
         // 중간 피격 Bool을 전송하지 않을 수 있으므로 모든 화면에서 명시적으로 해제한다.
-        _playerAnimation?.ClearImmediateDamageReaction();
+        if (_playerAnimation)
+            _playerAnimation.ClearImmediateDamageReaction();
 
         if (IsOwner)
         {

@@ -111,6 +111,18 @@ public class PlayerSkillMotion : NetworkBehaviour
     }
 
     /// <summary>
+    /// 스킬 정책에 따라 카메라가 회전을 제어하는 동안 Root Motion의 기준 회전도 함께 갱신합니다.
+    /// 카메라 제어가 없는 구간에는 호출이 중단되어 마지막 회전이 유지됩니다.
+    /// </summary>
+    public void UpdateOriginRotation(Quaternion rotation)
+    {
+        if (!_isMotionActive || !_isAuthorityMotionActive)
+            return;
+
+        _originRotation = rotation;
+    }
+
+    /// <summary>
     /// <summary>
     /// Timeline 애니메이션 클립의 Root Motion 절대 변위(deltaPosition)를 수신하여 물리 목표 위치로 대입합니다.
     /// (Timeline 환경에서는 deltaPosition이 시작점 대비 전체 누적 변위를 나타내므로 += 대신 = 대입을 수행하여 46프레임 착지 시 정확히 정지합니다)
@@ -172,7 +184,6 @@ public class PlayerSkillMotion : NetworkBehaviour
 
         Vector3 targetWorldPosition = _originPosition + (_originRotation * _targetLocalOffset);
         _rb.MovePosition(targetWorldPosition);
-        _rb.MoveRotation(_originRotation);
     }
 
     /// <summary>

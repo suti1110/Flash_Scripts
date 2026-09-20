@@ -7,9 +7,13 @@ public sealed class SO_HomingBeam : SO_Skill, ISkillNetworkEffect, ISkillNetwork
 {
     private const int StraightEffectId = 0;
     private const int HomingEffectId = 1;
-    private const int StraightContinuationEffectId = 2;
+    private const int SearchingEffectId = 2;
     private const float EffectPositionTolerance = 3f;
     private const float TargetDistanceTolerance = 5f;
+    private const int TargetCandidateCapacity = 64;
+
+    private readonly Collider[] _targetCandidates = new Collider[TargetCandidateCapacity];
+    private readonly HashSet<Rigidbody> _visitedTargetBodies = new();
 
     [Header("광선 날리기")]
     [SerializeField, InspectorName("탐색 대상 레이어")]
@@ -37,7 +41,9 @@ public sealed class SO_HomingBeam : SO_Skill, ISkillNetworkEffect, ISkillNetwork
     private float _turnRate = 360f;
 
     [SerializeField, InspectorName("유도 가속도"), Min(0.01f)]
-    [Tooltip("현재 속도를 목표 방향의 속도로 변화시키는 최대 가속도입니다. 낮을수록 관성이 강합니다.")]
+    [Tooltip(
+        "현재 속도를 목표 방향의 속도로 변화시키는 최대 가속도입니다. 낮을수록 관성이 강합니다."
+    )]
     private float _homingAcceleration = 55f;
 
     [SerializeField, InspectorName("명중 거리"), Min(0.01f)]
@@ -96,7 +102,7 @@ public sealed class SO_HomingBeam : SO_Skill, ISkillNetworkEffect, ISkillNetwork
     )
     {
         if (
-            (effectId != StraightEffectId && effectId != StraightContinuationEffectId)
+            (effectId != StraightEffectId && effectId != SearchingEffectId)
             || _beamEffectPrefab == null
             || caster == null
         )
@@ -121,7 +127,7 @@ public sealed class SO_HomingBeam : SO_Skill, ISkillNetworkEffect, ISkillNetwork
     )
     {
         if (
-            (effectId != StraightEffectId && effectId != StraightContinuationEffectId)
+            (effectId != StraightEffectId && effectId != SearchingEffectId)
             || _beamEffectPrefab == null
             || caster == null
         )
@@ -142,50 +148,44 @@ public sealed class SO_HomingBeam : SO_Skill, ISkillNetworkEffect, ISkillNetwork
         if (caster.TryGetComponent(out NetworkObject casterNetworkObject))
             canSelectTarget = !casterNetworkObject.IsSpawned || casterNetworkObject.IsOwner;
 
-        if (canSelectTarget && effectId == StraightEffectId)
+        if (canSelectTarget)
             caster.TryGetComponent(out playerSkill);
 
-        float straightLifetime =
-            effectId == StraightEffectId
-                ? _straightDuration
-                : Mathf.Max(0.01f, _noTargetLifetime - _straightDuration);
+        if (effectId == StraightEffectId)
+        {
+            effect.InitializeStraight(
+                caster,
+                _straightDuration,
+                _speed,
+                playerSkill == null
+                    ? null
+                    : (beamPosition, beamRotation) =>
+                    {
+                        if (caster == null || playerSkill == null)
+                            return;
 
-        effect.InitializeStraight(
+                        if (TryRequestHoming(playerSkill, caster.transform, beamPosition, beamRotation))
+                            return;
+
+                        playerSkill.RequestSpawnEffect(
+                            this,
+                            SearchingEffectId,
+                            beamPosition,
+                            beamRotation
+                        );
+                    }
+            );
+            return;
+        }
+
+        effect.InitializeSearching(
             caster,
-            straightLifetime,
+            Mathf.Max(0.01f, _noTargetLifetime - _straightDuration),
             _speed,
             playerSkill == null
                 ? null
                 : (beamPosition, beamRotation) =>
-                {
-                    if (caster == null || playerSkill == null)
-                        return;
-
-                    if (!TryFindTarget(beamPosition, caster.transform, out GameObject target))
-                    {
-                        playerSkill.RequestSpawnEffect(
-                            this,
-                            StraightContinuationEffectId,
-                            beamPosition,
-                            beamRotation
-                        );
-                        return;
-                    }
-
-                    Vector3 direction = GetTargetPosition(target) - beamPosition;
-                    Quaternion homingRotation =
-                        direction.sqrMagnitude > Mathf.Epsilon
-                            ? Quaternion.LookRotation(direction.normalized, caster.transform.up)
-                            : beamRotation;
-
-                    playerSkill.RequestSpawnTargetEffect(
-                        this,
-                        HomingEffectId,
-                        target,
-                        beamPosition,
-                        homingRotation
-                    );
-                }
+                    TryRequestHoming(playerSkill, caster.transform, beamPosition, beamRotation)
         );
     }
 
@@ -210,7 +210,7 @@ public sealed class SO_HomingBeam : SO_Skill, ISkillNetworkEffect, ISkillNetwork
         }
 
         float maximumStraightDistance =
-            _spawnOffset.magnitude + _speed * _straightDuration + EffectPositionTolerance;
+            _spawnOffset.magnitude + _speed * _noTargetLifetime + EffectPositionTolerance;
         return Vector3.Distance(position, caster.transform.position) <= maximumStraightDistance
             && Vector3.Distance(position, GetTargetPosition(target))
                 <= _acquisitionRange + TargetDistanceTolerance;
@@ -227,6 +227,7 @@ public sealed class SO_HomingBeam : SO_Skill, ISkillNetworkEffect, ISkillNetwork
         if (effectId != HomingEffectId || _beamEffectPrefab == null)
             return;
 
+        HomingBeamEffect.StopActiveSearchingBeam(caster);
         AudioManager.SfxPlayAtPoint(_homingAudio, position);
 
         GameObject effectObject = Instantiate(_beamEffectPrefab, position, rotation);
@@ -262,19 +263,25 @@ public sealed class SO_HomingBeam : SO_Skill, ISkillNetworkEffect, ISkillNetwork
         // 현재 소유자 화면뿐 아니라 서버 또는 다른 권한 구성에서도 같은 대상을 찾도록
         // 로컬 Player와 원격 OtherPlayer 레이어를 모두 포함하고 아래에서 시전자 자신을 제외한다.
         int targetLayers = _targetLayers | LayerMask.GetMask("Player", "OtherPlayer");
-        Collider[] candidates = Physics.OverlapSphere(
+        int candidateCount = Physics.OverlapSphereNonAlloc(
             origin,
             _acquisitionRange,
+            _targetCandidates,
             targetLayers,
             QueryTriggerInteraction.Collide
         );
-        HashSet<Rigidbody> visitedBodies = new();
+        _visitedTargetBodies.Clear();
         float nearestSqrDistance = float.PositiveInfinity;
 
-        foreach (Collider candidate in candidates)
+        for (int i = 0; i < candidateCount; i++)
         {
+            Collider candidate = _targetCandidates[i];
             Rigidbody body = candidate.attachedRigidbody;
-            if (body == null || !visitedBodies.Add(body) || body.transform == caster)
+            if (
+                body == null
+                || !_visitedTargetBodies.Add(body)
+                || body.transform == caster
+            )
                 continue;
             if (!body.TryGetComponent(out IDamageable _))
                 continue;
@@ -296,6 +303,33 @@ public sealed class SO_HomingBeam : SO_Skill, ISkillNetworkEffect, ISkillNetwork
         }
 
         return target != null;
+    }
+
+    private bool TryRequestHoming(
+        PlayerSkill playerSkill,
+        Transform caster,
+        Vector3 beamPosition,
+        Quaternion beamRotation
+    )
+    {
+        if (
+            playerSkill == null
+            || caster == null
+            || !TryFindTarget(beamPosition, caster, out GameObject target)
+        )
+        {
+            return false;
+        }
+
+        // 현재 진행 방향을 그대로 넘겨 유도 시작 순간에도 회전 제한이 유지되게 한다.
+        playerSkill.RequestSpawnTargetEffect(
+            this,
+            HomingEffectId,
+            target,
+            beamPosition,
+            beamRotation
+        );
+        return true;
     }
 
     private static Vector3 GetTargetPosition(GameObject target)

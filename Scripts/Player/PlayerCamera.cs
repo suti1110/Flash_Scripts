@@ -1,17 +1,37 @@
 using DG.Tweening;
 using Unity.Netcode;
+using Unity.Cinemachine;
 using UnityEngine;
 using UnityEngine.Rendering;
 
 public class PlayerCamera : MonoBehaviour, IReflectable
 {
     private const float MirrorRotationDuration = 0.1f;
+    private const int DefaultCameraPriority = 20;
+    private const int InactiveCameraPriority = 10;
 
     [field: SerializeField]
     public Camera MainCamera { get; private set; }
 
     [field: SerializeField]
     public Transform CameraPivot { get; private set; }
+
+    [Header("Cinemachine")]
+    [SerializeField]
+    private CinemachineBrain _cinemachineBrain;
+
+    [SerializeField]
+    private CinemachineCamera _thirdPersonCamera;
+
+    [SerializeField]
+    private CinemachineCamera _firstPersonCamera;
+
+    [SerializeField]
+    private PlayerLocalVisualFader _localVisualFader;
+
+    [SerializeField, Min(0.001f)]
+    private float _firstPersonNearClipPlane = 0.03f;
+
     private CameraController _controller;
 
     private Vector2 _pivotRotation;
@@ -22,6 +42,7 @@ public class PlayerCamera : MonoBehaviour, IReflectable
     private Tween _shakeTween;
     private CameraSpeedLines _speedLines;
     private float _baseFieldOfView;
+    private float _baseNearClipPlane;
     private float _fieldOfViewOffset;
     private float _rippleWeight;
     private float _rippleStrength;
@@ -53,7 +74,13 @@ public class PlayerCamera : MonoBehaviour, IReflectable
         _rb = GetComponent<Rigidbody>();
         _playerStateMachine = GetComponent<Player>().StateMachine;
         _baseFieldOfView = MainCamera != null ? MainCamera.fieldOfView : 60f;
+        _baseNearClipPlane = MainCamera != null ? MainCamera.nearClipPlane : 0.3f;
         _freezePresenter = GetComponent<CameraFreezeFramePresenter>();
+        _localVisualFader ??= GetComponent<PlayerLocalVisualFader>();
+        if (_localVisualFader == null)
+            _localVisualFader = gameObject.AddComponent<PlayerLocalVisualFader>();
+        EnsureCinemachineSetup();
+        SetCameraPriorities(SkillCameraViewMode.ThirdPerson);
     }
 
     private void OnEnable()
@@ -86,7 +113,7 @@ public class PlayerCamera : MonoBehaviour, IReflectable
 
     private void LateUpdate()
     {
-        if (Time.timeScale <= 0f)
+        if (Time.timeScale <= 0f || CameraPivot == null)
             return;
 
         if (_mirrorRotationTween == null || !_mirrorRotationTween.IsActive())
@@ -149,12 +176,52 @@ public class PlayerCamera : MonoBehaviour, IReflectable
                 * 4f
         );
 
-        MainCamera.transform.position =
-            cameraPosition + CameraPivot.TransformVector(ripplePosition + shakePosition);
-        MainCamera.transform.rotation =
+        Quaternion presentationRotation =
             Quaternion.LookRotation(CameraPivot.forward)
             * Quaternion.Euler(rippleRotation + shakeRotation);
-        MainCamera.fieldOfView = Mathf.Clamp(_baseFieldOfView + _fieldOfViewOffset, 1f, 179f);
+        Vector3 presentationOffset = CameraPivot.TransformVector(ripplePosition + shakePosition);
+        float fieldOfView = Mathf.Clamp(_baseFieldOfView + _fieldOfViewOffset, 1f, 179f);
+
+        if (_thirdPersonCamera != null)
+        {
+            _thirdPersonCamera.transform.SetPositionAndRotation(
+                cameraPosition + presentationOffset,
+                presentationRotation
+            );
+            SetCameraLens(_thirdPersonCamera, fieldOfView, _baseNearClipPlane);
+        }
+
+        if (_firstPersonCamera != null)
+        {
+            _firstPersonCamera.transform.SetPositionAndRotation(
+                CameraPivot.position + presentationOffset,
+                presentationRotation
+            );
+            SetCameraLens(_firstPersonCamera, fieldOfView, _firstPersonNearClipPlane);
+        }
+
+        _cinemachineBrain?.ManualUpdate();
+    }
+
+    public void SetSkillCameraView(SkillCameraViewMode viewMode, float blendDuration)
+    {
+        if (!CanPlayLocalFeedback())
+            return;
+
+        EnsureCinemachineSetup();
+        if (_cinemachineBrain == null || _thirdPersonCamera == null || _firstPersonCamera == null)
+            return;
+
+        _cinemachineBrain.DefaultBlend = new CinemachineBlendDefinition(
+            CinemachineBlendDefinition.Styles.EaseInOut,
+            Mathf.Max(0f, blendDuration)
+        );
+        SetCameraPriorities(viewMode);
+
+        if (viewMode == SkillCameraViewMode.FirstPerson)
+            _localVisualFader?.FadeToFirstPerson(blendDuration);
+        else
+            _localVisualFader?.FadeToThirdPerson(blendDuration);
     }
 
     public void SetCameraRotation(Vector2 value)
@@ -262,6 +329,89 @@ public class PlayerCamera : MonoBehaviour, IReflectable
         return networkObject == null || !networkObject.IsSpawned || networkObject.IsOwner;
     }
 
+    private void EnsureCinemachineSetup()
+    {
+        if (MainCamera == null || CameraPivot == null)
+            return;
+
+        _cinemachineBrain ??= MainCamera.GetComponent<CinemachineBrain>();
+        if (_cinemachineBrain == null)
+            _cinemachineBrain = MainCamera.gameObject.AddComponent<CinemachineBrain>();
+
+        _cinemachineBrain.UpdateMethod = CinemachineBrain.UpdateMethods.ManualUpdate;
+        _cinemachineBrain.BlendUpdateMethod = CinemachineBrain.BrainUpdateMethods.LateUpdate;
+
+        _thirdPersonCamera = EnsurePassiveCamera(
+            _thirdPersonCamera,
+            "Third Person Camera",
+            MainCamera.transform.position,
+            MainCamera.transform.rotation
+        );
+        _firstPersonCamera = EnsurePassiveCamera(
+            _firstPersonCamera,
+            "First Person Camera",
+            CameraPivot.position,
+            CameraPivot.rotation
+        );
+
+        LensSettings defaultLens = LensSettings.FromCamera(MainCamera);
+        defaultLens.NearClipPlane = _baseNearClipPlane;
+        _thirdPersonCamera.Lens = defaultLens;
+        defaultLens.NearClipPlane = _firstPersonNearClipPlane;
+        _firstPersonCamera.Lens = defaultLens;
+    }
+
+    private CinemachineCamera EnsurePassiveCamera(
+        CinemachineCamera camera,
+        string cameraName,
+        Vector3 position,
+        Quaternion rotation
+    )
+    {
+        if (camera != null)
+            return camera;
+
+        Transform existing = CameraPivot.Find(cameraName);
+        if (existing != null)
+            camera = existing.GetComponent<CinemachineCamera>();
+
+        if (camera == null)
+        {
+            GameObject cameraObject = new(cameraName);
+            cameraObject.transform.SetParent(CameraPivot, true);
+            cameraObject.transform.SetPositionAndRotation(position, rotation);
+            camera = cameraObject.AddComponent<CinemachineCamera>();
+        }
+
+        return camera;
+    }
+
+    private void SetCameraPriorities(SkillCameraViewMode viewMode)
+    {
+        if (_thirdPersonCamera == null || _firstPersonCamera == null)
+            return;
+
+        bool useFirstPerson = viewMode == SkillCameraViewMode.FirstPerson;
+        _thirdPersonCamera.Priority = useFirstPerson
+            ? InactiveCameraPriority
+            : DefaultCameraPriority;
+        _firstPersonCamera.Priority = useFirstPerson
+            ? DefaultCameraPriority
+            : InactiveCameraPriority;
+    }
+
+    private static void SetCameraLens(
+        CinemachineCamera camera,
+        float fieldOfView,
+        float nearClipPlane
+    )
+    {
+        LensSettings lens = camera.Lens;
+        lens.FieldOfView = fieldOfView;
+        lens.NearClipPlane = nearClipPlane;
+        camera.Lens = lens;
+    }
+
     private void PlayFieldOfViewPulse(
         float offset,
         float returnDuration,
@@ -351,6 +501,9 @@ public class PlayerCamera : MonoBehaviour, IReflectable
         _speedLines?.Stop();
         EndFreezeFrame();
 
+        SetCameraPriorities(SkillCameraViewMode.ThirdPerson);
+        _localVisualFader?.RestoreImmediately();
+
         if (MainCamera != null)
             MainCamera.fieldOfView = _baseFieldOfView;
     }
@@ -365,6 +518,11 @@ public class PlayerCamera : MonoBehaviour, IReflectable
         if (!CameraPivot)
         {
             EditorLog.LogError("CameraPivot이 할당되지 않았습니다!!!", this);
+        }
+
+        if (!_localVisualFader)
+        {
+            EditorLog.LogError("PlayerLocalVisualFader가 할당되지 않았습니다!!!", this);
         }
 
         if (_cameraOffset == Vector3.zero)

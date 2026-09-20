@@ -8,6 +8,7 @@ public class AudioManager : MonoBehaviour
 
     [SerializeField]
     private AudioSource _sfx;
+    private AudioSource _hitStopSfx;
     public SO_SFXContainer Container;
 
     private Tween _bgmDuckTween;
@@ -44,8 +45,10 @@ public class AudioManager : MonoBehaviour
             if (_bgm != null)
                 _bgmNormalVolume = _bgm.volume;
 
-            if (_sfx != null)
-                _sfx.ignoreListenerPause = true;
+            Configure2DSfxSource(_sfx, true);
+
+            _hitStopSfx = gameObject.AddComponent<AudioSource>();
+            Configure2DSfxSource(_hitStopSfx, true);
         }
         else
         {
@@ -89,7 +92,7 @@ public class AudioManager : MonoBehaviour
         Vector3 position,
         float volume = 1f,
         float minDistance = 1f,
-        float maxDistance = 30f
+        float maxDistance = 80f
     )
     {
         AudioManager manager = Instance;
@@ -110,7 +113,7 @@ public class AudioManager : MonoBehaviour
     public static void ConfigureSpatialSfxSource(
         AudioSource source,
         float minDistance = 1f,
-        float maxDistance = 30f
+        float maxDistance = 80f
     )
     {
         AudioManager manager = Instance;
@@ -120,20 +123,13 @@ public class AudioManager : MonoBehaviour
         manager.ConfigureSpatialSource(source, minDistance, maxDistance);
     }
 
-    public static void ConfigureListenerSfxSource(AudioSource source)
+    public static void PlayHitStopSfx(AudioClip clip)
     {
         AudioManager manager = Instance;
-        if (manager == null || source == null)
+        if (manager == null || manager._hitStopSfx == null || clip == null)
             return;
 
-        source.playOnAwake = false;
-        source.loop = false;
-        source.spatialBlend = 0f;
-        source.dopplerLevel = 0f;
-        source.ignoreListenerPause = false;
-
-        if (manager._sfx != null)
-            source.outputAudioMixerGroup = manager._sfx.outputAudioMixerGroup;
+        manager._hitStopSfx.PlayOneShot(clip);
     }
 
     public static void PauseSharedSfxForHitStop()
@@ -160,9 +156,8 @@ public class AudioManager : MonoBehaviour
         manager._sharedSfxPausedForHitStop = false;
     }
 
-    public static void PlayListenerSfxWithBgmDuck(
+    public static void Play2DSfxWithBgmDuck(
         AudioClip clip,
-        AudioSource listenerSource,
         float sfxVolume,
         float duckVolumeRatio,
         float duckDuration,
@@ -170,21 +165,29 @@ public class AudioManager : MonoBehaviour
     )
     {
         AudioManager manager = Instance;
-        if (manager == null || clip == null || listenerSource == null)
+        if (manager == null || manager._sfx == null || clip == null)
             return;
 
-        ConfigureListenerSfxSource(listenerSource);
-        listenerSource.Stop();
-        listenerSource.clip = clip;
-        listenerSource.volume = Mathf.Clamp01(sfxVolume);
-        listenerSource.Play();
+        manager._sfx.PlayOneShot(clip, Mathf.Clamp01(sfxVolume));
 
         manager.StartBgmDuck(
-            clip.length / Mathf.Max(0.01f, Mathf.Abs(listenerSource.pitch)),
+            clip.length / Mathf.Max(0.01f, Mathf.Abs(manager._sfx.pitch)),
             duckVolumeRatio,
             duckDuration,
             recoveryDuration
         );
+    }
+
+    private void Configure2DSfxSource(AudioSource source, bool ignoreListenerPause)
+    {
+        if (source == null)
+            return;
+
+        source.spatialBlend = 0f;
+        source.ignoreListenerPause = ignoreListenerPause;
+
+        if (_sfx != null)
+            source.outputAudioMixerGroup = _sfx.outputAudioMixerGroup;
     }
 
     private void ConfigureSpatialSource(AudioSource source, float minDistance, float maxDistance)

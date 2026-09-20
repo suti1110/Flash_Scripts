@@ -21,7 +21,6 @@ public class PlayerDamage : NetworkBehaviour, IDamageable
 
     private IDeathable _death;
     private PlayerCamera _playerCamera;
-    private AudioSource _localHitAudioSource;
     private Quaternion _damageFacingRotation;
     private bool _hasDamageFacingRotation;
 
@@ -193,19 +192,11 @@ public class PlayerDamage : NetworkBehaviour, IDamageable
 
         AudioManager audioManager = AudioManager.Instance;
         AudioClip hitClip = audioManager != null ? audioManager.Container?.Hit : null;
-        Camera camera = _playerCamera != null ? _playerCamera.MainCamera : null;
-        if (hitClip == null || camera == null)
+        if (hitClip == null)
             return;
 
-        if (_localHitAudioSource == null)
-        {
-            _localHitAudioSource = camera.gameObject.AddComponent<AudioSource>();
-            AudioManager.ConfigureListenerSfxSource(_localHitAudioSource);
-        }
-
-        AudioManager.PlayListenerSfxWithBgmDuck(
+        AudioManager.Play2DSfxWithBgmDuck(
             hitClip,
-            _localHitAudioSource,
             _takingDamage.HitSfxVolume,
             _takingDamage.BgmDuckVolumeRatio,
             BgmDuckDuration,

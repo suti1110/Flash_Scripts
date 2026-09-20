@@ -19,7 +19,6 @@ public class PlayerAttack : NetworkBehaviour, IAttackable
 
     private Rigidbody _attackerBody;
     private PlayerCamera _playerCamera;
-    private AudioSource _localHitConfirmAudioSource;
     private Coroutine _hitStopRoutine;
     private Camera _hitStopCamera;
     private bool _isHitStopApplied;
@@ -61,11 +60,7 @@ public class PlayerAttack : NetworkBehaviour, IAttackable
 
     public void Attack()
     {
-        if (
-            Time.timeScale <= 0f
-            || (IsSpawned && !IsOwner)
-            || _actionStateMachine.IsRunning
-        )
+        if (Time.timeScale <= 0f || (IsSpawned && !IsOwner) || _actionStateMachine.IsRunning)
             return;
 
         _actionStateMachine.Start(_attacking.ActionDuration, _attacking.ExecuteTime);
@@ -119,12 +114,12 @@ public class PlayerAttack : NetworkBehaviour, IAttackable
 
         // 서버에서는 호스트가 Player, 게스트가 OtherPlayer 레이어이므로
         // 공격자 관점과 무관하게 양쪽 플레이어 레이어를 모두 검색한 뒤 자신을 제외한다.
-        int targetLayers =
-            _attacking.TargetLayer | LayerMask.GetMask("Player", "OtherPlayer");
+        int targetLayers = _attacking.TargetLayer | LayerMask.GetMask("Player", "OtherPlayer");
 
-        Vector3 horizontalVelocity = _attackerBody != null
-            ? Vector3.ProjectOnPlane(_attackerBody.linearVelocity, Vector3.up)
-            : Vector3.zero;
+        Vector3 horizontalVelocity =
+            _attackerBody != null
+                ? Vector3.ProjectOnPlane(_attackerBody.linearVelocity, Vector3.up)
+                : Vector3.zero;
         float effectiveRange = _attacking.GetEffectiveRange(horizontalVelocity.magnitude);
 
         int count = Physics.OverlapSphereNonAlloc(
@@ -149,9 +144,10 @@ public class PlayerAttack : NetworkBehaviour, IAttackable
 
             if (rb.TryGetComponent(out PlayerDamage damageable))
             {
-                Vector3 attackerCenter = _attackerBody != null
-                    ? _attackerBody.worldCenterOfMass
-                    : transform.position + Vector3.up;
+                Vector3 attackerCenter =
+                    _attackerBody != null
+                        ? _attackerBody.worldCenterOfMass
+                        : transform.position + Vector3.up;
                 Vector3 hitPosition = Vector3.Lerp(attackerCenter, rb.worldCenterOfMass, 0.5f);
                 _damageableTargets[rb] = new AttackTarget(damageable, hitPosition);
             }
@@ -169,12 +165,14 @@ public class PlayerAttack : NetworkBehaviour, IAttackable
                 && target.Value.Damageable.IsAlive
             )
             {
-                CustomRoomSettings roomSettings = RelayManager.Instance != null
-                    ? RelayManager.Instance.CurrentRoomSettings
-                    : CustomRoomSettings.Default;
-                int attackDamage = RelayManager.Instance != null && RelayManager.Instance.IsCustomRoom
-                    ? roomSettings.AttackDamage
-                    : _attacking.Damage;
+                CustomRoomSettings roomSettings =
+                    RelayManager.Instance != null
+                        ? RelayManager.Instance.CurrentRoomSettings
+                        : CustomRoomSettings.Default;
+                int attackDamage =
+                    RelayManager.Instance != null && RelayManager.Instance.IsCustomRoom
+                        ? roomSettings.AttackDamage
+                        : _attacking.Damage;
                 bool wasLethal = target.Value.Damageable.TakeDamageOnServer(
                     attackDamage,
                     direction * (_attacking.KnockbackForce * roomSettings.KnockbackMultiplier)
@@ -192,8 +190,8 @@ public class PlayerAttack : NetworkBehaviour, IAttackable
                 {
                     if (!wasLethal)
                     {
-                        target.Value.Damageable
-                            .GetComponent<PlayerAnimation>()
+                        target
+                            .Value.Damageable.GetComponent<PlayerAnimation>()
                             ?.PlayImmediateDamageReaction(-direction);
                     }
                     PlayAttackHitEffect(target.Value.HitPosition, -direction);
@@ -261,9 +259,10 @@ public class PlayerAttack : NetworkBehaviour, IAttackable
         if (hitEffectPrefab == null)
             return;
 
-        Quaternion rotation = direction.sqrMagnitude > 0.0001f
-            ? Quaternion.LookRotation(direction.normalized)
-            : Quaternion.identity;
+        Quaternion rotation =
+            direction.sqrMagnitude > 0.0001f
+                ? Quaternion.LookRotation(direction.normalized)
+                : Quaternion.identity;
         GameObject hitEffectObject = Instantiate(hitEffectPrefab, position, rotation);
         if (hitEffectObject.TryGetComponent(out AttackHitEffect hitEffect))
         {
@@ -298,12 +297,12 @@ public class PlayerAttack : NetworkBehaviour, IAttackable
         if (delay > 0f)
             yield return new WaitForSecondsRealtime(delay);
 
-        AttackHitEffect hitEffectPrefab = _attacking.HitEffectPrefab != null
-            ? _attacking.HitEffectPrefab.GetComponent<AttackHitEffect>()
-            : null;
-        float effectMovementDuration = hitEffectPrefab != null
-            ? hitEffectPrefab.MovementDuration
-            : 0f;
+        AttackHitEffect hitEffectPrefab =
+            _attacking.HitEffectPrefab != null
+                ? _attacking.HitEffectPrefab.GetComponent<AttackHitEffect>()
+                : null;
+        float effectMovementDuration =
+            hitEffectPrefab != null ? hitEffectPrefab.MovementDuration : 0f;
         if (effectMovementDuration > 0f)
             yield return new WaitForSecondsRealtime(effectMovementDuration);
 
@@ -356,20 +355,10 @@ public class PlayerAttack : NetworkBehaviour, IAttackable
     {
         AudioManager audioManager = AudioManager.Instance;
         AudioClip hitClip = audioManager != null ? audioManager.Container?.Hit : null;
-        if (hitClip == null || _hitStopCamera == null)
+        if (hitClip == null)
             return;
 
-        if (_localHitConfirmAudioSource == null)
-        {
-            _localHitConfirmAudioSource = _hitStopCamera.gameObject.AddComponent<AudioSource>();
-            AudioManager.ConfigureListenerSfxSource(_localHitConfirmAudioSource);
-            _localHitConfirmAudioSource.ignoreListenerPause = true;
-        }
-
-        _localHitConfirmAudioSource.Stop();
-        _localHitConfirmAudioSource.clip = hitClip;
-        _localHitConfirmAudioSource.volume = 1f;
-        _localHitConfirmAudioSource.Play();
+        AudioManager.PlayHitStopSfx(hitClip);
     }
 
     private static bool IsFinite(Vector3 value)
