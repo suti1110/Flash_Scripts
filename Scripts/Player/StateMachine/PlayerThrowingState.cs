@@ -3,6 +3,12 @@ using UnityEngine;
 [CreateAssetMenu(fileName = "PlayerThrowingState", menuName = "Flash/Player/States/Throwing")]
 public sealed class PlayerThrowingState : PlayerState
 {
+    protected override PlayerInputType ResolveAllowedInputs(PlayerStateContext context)
+    {
+        // 조준 중에도 우클릭의 release 콜백을 받아야 한다. 회복 중 재입력은 상호작용 컴포넌트가 차단한다.
+        return base.ResolveAllowedInputs(context) | PlayerInputType.Interacting;
+    }
+
     // 서버 승인 RPC보다 공격 State 진입이 먼저 끝난 경우에도 늦게 도착한 투척이 공격을 덮어쓰지 않게 한다.
     public override bool CanEnterFrom(PlayerState previousState)
     {

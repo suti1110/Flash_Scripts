@@ -52,7 +52,7 @@ public class SO_Blinking : SO_Skill, ISkillNetworkEffect
         }
 
         Vector3 blinkDirection = playerCamera.CameraPivot.forward;
-        playerCamera.PlayBlinkFeedback(
+        playerCamera.PlayZoomWithSpeedLines(
             _cameraFieldOfViewIncrease,
             _cameraZoomDuration,
             _cameraReturnDuration

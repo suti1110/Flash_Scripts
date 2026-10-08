@@ -206,6 +206,8 @@ public class MirrorReflectionFeature : ScriptableRendererFeature
         go.hideFlags = HideFlags.HideAndDontSave;
         cam = go.GetComponent<Camera>();
         cam.enabled = false;
+        // 일반 Camera 설정과 별개로, URP의 후처리 설정을 보관할 컴포넌트가 필요합니다.
+        cam.GetUniversalAdditionalCameraData();
         _reflectionCams[mirror] = cam;
         return cam;
     }
@@ -224,10 +226,23 @@ public class MirrorReflectionFeature : ScriptableRendererFeature
         Vector3 planePos = mirror.transform.position;
 
         reflCam.CopyFrom(mainCam);
+        // CopyFrom은 SceneView 카메라 종류까지 복사합니다. URP는 SceneView에서
+        // Depth Of Field를 생략하므로, 반사 텍스처는 항상 Game 카메라로 렌더링합니다.
+        reflCam.cameraType = CameraType.Game;
         reflCam.clearFlags = CameraClearFlags.Skybox;
         reflCam.backgroundColor = Color.black;
         reflCam.targetTexture = rt;
         reflCam.enabled = false;
+
+        // CopyFrom은 일반 Camera 설정을 복사합니다. 거울 전용 URP 설정은
+        // 이후에 적용하여 플레이어 카메라의 Volume 설정과 독립적으로 유지합니다.
+        var cameraData = reflCam.GetUniversalAdditionalCameraData();
+        cameraData.renderPostProcessing = mirror.reflectionPostProcessing;
+        cameraData.volumeLayerMask = mirror.reflectionVolumeMask.value != 0
+            ? mirror.reflectionVolumeMask
+            : (LayerMask)LayerMask.GetMask("MirrorVolume");
+        // Local Volume은 반사 카메라의 가상 위치 대신 거울 위치를 기준으로 평가합니다.
+        cameraData.volumeTrigger = mirror.transform;
 
         // 거울별 cullingMask 적용
         reflCam.cullingMask = mirror.reflectionLayers & ~(1 << 4);

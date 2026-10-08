@@ -3,7 +3,7 @@ using Unity.Netcode;
 using UnityEngine;
 
 [CreateAssetMenu(fileName = "HomingBeam", menuName = "Player/Skill/Homing Beam")]
-public sealed class SO_HomingBeam : SO_Skill, ISkillNetworkEffect, ISkillNetworkTargetEffect
+public sealed class SO_HomingBeam : SO_SwordSkill, ISkillNetworkEffect, ISkillNetworkTargetEffect
 {
     private const int StraightEffectId = 0;
     private const int HomingEffectId = 1;
@@ -75,7 +75,7 @@ public sealed class SO_HomingBeam : SO_Skill, ISkillNetworkEffect, ISkillNetwork
     [SerializeField, InspectorName("원래 시점 복귀 시간"), Min(0.01f)]
     private float _cameraReturnDuration = 0.6f;
 
-    public override void ExecuteSkill(in SkillExecutionContext context)
+    protected override void ExecuteSwordSkill(in SkillExecutionContext context, float swordSize)
     {
         Transform caster = context.Transform;
         if (caster == null)
@@ -83,11 +83,8 @@ public sealed class SO_HomingBeam : SO_Skill, ISkillNetworkEffect, ISkillNetwork
 
         if (context.TryGetComponent(out PlayerCamera playerCamera))
         {
-            playerCamera.PlayHomingBeamFeedback(
-                _cameraFieldOfViewDecrease,
-                _cameraRippleStrength,
-                _cameraReturnDuration
-            );
+            playerCamera.PlayFieldOfViewFeedback(-Mathf.Abs(_cameraFieldOfViewDecrease), _cameraReturnDuration);
+            playerCamera.PlayRippleFeedback(_cameraRippleStrength * swordSize, _cameraReturnDuration);
         }
 
         Vector3 spawnPosition = caster.TransformPoint(_spawnOffset);
@@ -143,13 +140,13 @@ public sealed class SO_HomingBeam : SO_Skill, ISkillNetworkEffect, ISkillNetwork
             return;
         }
 
-        PlayerSkill playerSkill = null;
+        ISkillEffectRequester effectRequester = null;
         bool canSelectTarget = true;
         if (caster.TryGetComponent(out NetworkObject casterNetworkObject))
             canSelectTarget = !casterNetworkObject.IsSpawned || casterNetworkObject.IsOwner;
 
         if (canSelectTarget)
-            caster.TryGetComponent(out playerSkill);
+            effectRequester = caster.GetComponent<ISkillEffectRequester>();
 
         if (effectId == StraightEffectId)
         {
@@ -157,23 +154,24 @@ public sealed class SO_HomingBeam : SO_Skill, ISkillNetworkEffect, ISkillNetwork
                 caster,
                 _straightDuration,
                 _speed,
-                playerSkill == null
+                effectRequester == null
                     ? null
                     : (beamPosition, beamRotation) =>
                     {
-                        if (caster == null || playerSkill == null)
+                        if (caster == null || effectRequester == null)
                             return;
 
-                        if (TryRequestHoming(playerSkill, caster.transform, beamPosition, beamRotation))
+                        if (TryRequestHoming(effectRequester, caster.transform, beamPosition, beamRotation))
                             return;
 
-                        playerSkill.RequestSpawnEffect(
+                        effectRequester.RequestSpawnEffect(
                             this,
                             SearchingEffectId,
                             beamPosition,
                             beamRotation
                         );
-                    }
+                    },
+                GetSwordSize(caster.transform)
             );
             return;
         }
@@ -182,10 +180,11 @@ public sealed class SO_HomingBeam : SO_Skill, ISkillNetworkEffect, ISkillNetwork
             caster,
             Mathf.Max(0.01f, _noTargetLifetime - _straightDuration),
             _speed,
-            playerSkill == null
+            effectRequester == null
                 ? null
                 : (beamPosition, beamRotation) =>
-                    TryRequestHoming(playerSkill, caster.transform, beamPosition, beamRotation)
+                    TryRequestHoming(effectRequester, caster.transform, beamPosition, beamRotation),
+            GetSwordSize(caster.transform)
         );
     }
 
@@ -209,11 +208,12 @@ public sealed class SO_HomingBeam : SO_Skill, ISkillNetworkEffect, ISkillNetwork
             return false;
         }
 
+        float swordSize = GetSwordSize(caster.transform);
         float maximumStraightDistance =
             _spawnOffset.magnitude + _speed * _noTargetLifetime + EffectPositionTolerance;
         return Vector3.Distance(position, caster.transform.position) <= maximumStraightDistance
             && Vector3.Distance(position, GetTargetPosition(target))
-                <= _acquisitionRange + TargetDistanceTolerance;
+                <= _acquisitionRange * swordSize + TargetDistanceTolerance;
     }
 
     public void PlayNetworkTargetEffect(
@@ -247,10 +247,11 @@ public sealed class SO_HomingBeam : SO_Skill, ISkillNetworkEffect, ISkillNetwork
             _speed,
             _turnRate,
             _homingAcceleration,
-            _hitDistance,
+            _hitDistance * GetSwordSize(caster.transform),
             _damage,
             _knockbackForce,
-            canApplyDamage
+            canApplyDamage,
+            GetSwordSize(caster.transform)
         );
     }
 
@@ -265,7 +266,7 @@ public sealed class SO_HomingBeam : SO_Skill, ISkillNetworkEffect, ISkillNetwork
         int targetLayers = _targetLayers | LayerMask.GetMask("Player", "OtherPlayer");
         int candidateCount = Physics.OverlapSphereNonAlloc(
             origin,
-            _acquisitionRange,
+            _acquisitionRange * GetSwordSize(caster),
             _targetCandidates,
             targetLayers,
             QueryTriggerInteraction.Collide
@@ -306,14 +307,14 @@ public sealed class SO_HomingBeam : SO_Skill, ISkillNetworkEffect, ISkillNetwork
     }
 
     private bool TryRequestHoming(
-        PlayerSkill playerSkill,
+        ISkillEffectRequester effectRequester,
         Transform caster,
         Vector3 beamPosition,
         Quaternion beamRotation
     )
     {
         if (
-            playerSkill == null
+            effectRequester == null
             || caster == null
             || !TryFindTarget(beamPosition, caster, out GameObject target)
         )
@@ -322,7 +323,7 @@ public sealed class SO_HomingBeam : SO_Skill, ISkillNetworkEffect, ISkillNetwork
         }
 
         // 현재 진행 방향을 그대로 넘겨 유도 시작 순간에도 회전 제한이 유지되게 한다.
-        playerSkill.RequestSpawnTargetEffect(
+        effectRequester.RequestSpawnTargetEffect(
             this,
             HomingEffectId,
             target,

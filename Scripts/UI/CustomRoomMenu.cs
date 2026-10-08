@@ -676,7 +676,7 @@ public sealed class CustomRoomMenu : MonoBehaviour
     private static void SetPlayerCountText(TMP_Text text, Slider slider)
     {
         if (text != null && slider != null)
-            text.SetText("{0:0} Players", slider.value);
+            text.SetText("{0:0}", slider.value);
     }
 
     private void OnValidate()

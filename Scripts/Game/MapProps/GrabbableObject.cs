@@ -61,6 +61,11 @@ public sealed class GrabbableObject : NetworkBehaviour
     private bool _isArmed;
     private bool _restoreCollisionsWhenSeparated;
 
+    // ThrowPower는 충격량이다. 실제 투척과 궤적 미리보기가 같은 질량/감쇠 값을 사용한다.
+    internal float Mass => _rigidbody.mass;
+    internal float LinearDamping => _rigidbody.linearDamping;
+    internal bool UsesGravity => _rigidbody.useGravity;
+
     private void Awake()
     {
         _rigidbody = GetComponent<Rigidbody>();
@@ -125,9 +130,9 @@ public sealed class GrabbableObject : NetworkBehaviour
         PlayInteractionAudio(InteractionAudio.Grab, transform.position);
     }
 
-    internal bool Throw(Vector3 direction, float speed)
+    internal bool Throw(Vector3 direction, float impulse)
     {
-        // 손 위치 추적을 끝낸 뒤 서버 Rigidbody에 초기 속도를 부여하여 이후 궤적을 물리에 맡긴다.
+        // 손 위치 추적을 끝낸 뒤 서버 Rigidbody에 충격량을 가하여 이후 궤적을 물리에 맡긴다.
         if (!MapPropAuthority.CanSimulate || _holder == null)
             return false;
 
@@ -139,7 +144,8 @@ public sealed class GrabbableObject : NetworkBehaviour
         BeginCollisionRestoration();
         transform.SetParent(null, true);
         _rigidbody.isKinematic = false;
-        _rigidbody.linearVelocity = direction.normalized * speed;
+        _rigidbody.linearVelocity = Vector3.zero;
+        _rigidbody.AddForce(direction.normalized * impulse, ForceMode.Impulse);
         PlayInteractionAudio(InteractionAudio.Throw, transform.position);
         return true;
     }

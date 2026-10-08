@@ -19,6 +19,7 @@ public class PlayerAttack : NetworkBehaviour, IAttackable
 
     private Rigidbody _attackerBody;
     private PlayerCamera _playerCamera;
+    private ISwordSizeProvider _swordSize;
     private Coroutine _hitStopRoutine;
     private Camera _hitStopCamera;
     private bool _isHitStopApplied;
@@ -43,6 +44,7 @@ public class PlayerAttack : NetworkBehaviour, IAttackable
         _playerStateMachine = GetComponent<Player>().StateMachine;
         _attackerBody = GetComponent<Rigidbody>();
         _playerCamera = GetComponent<PlayerCamera>();
+        _swordSize = GetComponent<ISwordSizeProvider>();
 
         _actionStateMachine.Started += HandleAttackStarted;
         _actionStateMachine.ExecutionPointReached += AttackHit;
@@ -120,7 +122,9 @@ public class PlayerAttack : NetworkBehaviour, IAttackable
             _attackerBody != null
                 ? Vector3.ProjectOnPlane(_attackerBody.linearVelocity, Vector3.up)
                 : Vector3.zero;
-        float effectiveRange = _attacking.GetEffectiveRange(horizontalVelocity.magnitude);
+        // 서버에 동기화된 검 크기로 판정 범위를 넓혀 시각 크기와 명중 거리를 일치시킨다.
+        float effectiveRange = _attacking.GetEffectiveRange(horizontalVelocity.magnitude)
+            * (_swordSize != null ? _swordSize.SwordSize : 1f);
 
         int count = Physics.OverlapSphereNonAlloc(
             transform.position,

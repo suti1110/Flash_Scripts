@@ -39,6 +39,8 @@ public enum SkillCameraViewMode
 {
     ThirdPerson,
     FirstPerson,
+    [InspectorName("개선된 3인칭 (어깨 시점)")]
+    ImprovedThirdPerson,
 }
 
 public interface ISkillNetworkEffect
@@ -68,6 +70,19 @@ public interface ISkillNetworkTargetEffect
         Vector3 position,
         Quaternion rotation
     );
+}
+
+// 실행이 끝난 뒤에도 남는 발사체가 원래 스킬의 효과를 요청할 수 있게 한다.
+public interface ISkillEffectRequester
+{
+    void RequestSpawnEffect(SO_Skill skill, int effectId, Vector3 position, Quaternion rotation);
+    void RequestSpawnTargetEffect(SO_Skill skill, int effectId, GameObject target, Vector3 position, Quaternion rotation);
+}
+
+public interface ITimedSkillController
+{
+    bool IsTimedSkillActive(SO_Skill skill);
+    void ActivateTimedSkill(SO_Skill skill);
 }
 
 public interface ISkillCastIndicator
@@ -104,30 +119,33 @@ public readonly struct SkillCastIndicatorData
 public readonly struct SkillExecutionContext
 {
     private readonly GameObject _caster;
-    private readonly Action<int, Vector3, Quaternion> _networkEffectRequester;
-    private readonly Action<int, GameObject, Vector3, Quaternion> _networkTargetEffectRequester;
+    private readonly SO_Skill _skill;
+    private readonly ISkillEffectRequester _effectRequester;
     private readonly bool _hasTargetPosition;
     private readonly Vector3 _targetPosition;
 
     public SkillExecutionContext(
         GameObject caster,
         IEnergyTracker energyTracker,
-        Action<int, Vector3, Quaternion> networkEffectRequester,
-        Action<int, GameObject, Vector3, Quaternion> networkTargetEffectRequester,
+        SO_Skill skill,
+        ISkillEffectRequester effectRequester,
+        ITimedSkillController timedSkills,
         bool hasTargetPosition = false,
         Vector3 targetPosition = default
     )
     {
         _caster = caster;
         EnergyTracker = energyTracker;
-        _networkEffectRequester = networkEffectRequester;
-        _networkTargetEffectRequester = networkTargetEffectRequester;
+        _skill = skill;
+        _effectRequester = effectRequester;
+        TimedSkills = timedSkills;
         _hasTargetPosition = hasTargetPosition;
         _targetPosition = targetPosition;
     }
 
     public Transform Transform => _caster != null ? _caster.transform : null;
     public IEnergyTracker EnergyTracker { get; }
+    public ITimedSkillController TimedSkills { get; }
 
     public bool TryGetComponent<T>(out T component)
         where T : Component
@@ -138,7 +156,7 @@ public readonly struct SkillExecutionContext
 
     public void RequestNetworkEffect(int effectId, Vector3 position, Quaternion rotation)
     {
-        _networkEffectRequester?.Invoke(effectId, position, rotation);
+        _effectRequester?.RequestSpawnEffect(_skill, effectId, position, rotation);
     }
 
     public void RequestNetworkTargetEffect(
@@ -148,7 +166,7 @@ public readonly struct SkillExecutionContext
         Quaternion rotation
     )
     {
-        _networkTargetEffectRequester?.Invoke(effectId, target, position, rotation);
+        _effectRequester?.RequestSpawnTargetEffect(_skill, effectId, target, position, rotation);
     }
 
     public bool TryGetTargetPosition(out Vector3 position)

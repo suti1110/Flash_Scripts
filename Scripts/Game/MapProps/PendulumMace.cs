@@ -23,16 +23,9 @@ public sealed class PendulumMace : MonoBehaviour
     [SerializeField, Min(0f)]
     private float _repeatHitCooldown = 0.75f;
 
-    [Header("Sound")]
-    [SerializeField]
-    private AudioClip _swingLoopAudio;
-
-    [SerializeField, Range(0f, 1f)]
-    private float _swingVolume = 0.65f;
-
     private readonly Dictionary<PlayerDamage, float> _nextHitTimes = new();
     private PendulumMaceHitbox _hitbox;
-    private AudioSource _swingAudioSource;
+    [SerializeField] private AudioSource _swingAudioSource;
 
     private void Awake()
     {
@@ -43,13 +36,8 @@ public sealed class PendulumMace : MonoBehaviour
         if (_hitbox != null)
             _hitbox.Initialize(this);
 
-        if (_swingLoopAudio != null)
+        if (_swingAudioSource != null && _swingAudioSource.clip != null)
         {
-            _swingAudioSource = gameObject.AddComponent<AudioSource>();
-            AudioManager.ConfigureSpatialSfxSource(_swingAudioSource, 2f, 40f);
-            _swingAudioSource.clip = _swingLoopAudio;
-            _swingAudioSource.loop = true;
-            _swingAudioSource.volume = _swingVolume;
             _swingAudioSource.Play();
         }
     }

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Unity.Netcode;
 using UnityEngine;
 
@@ -6,6 +7,42 @@ public interface IEnergyTracker
 {
     float Energy { get; }
     void SetTrackingPause(bool isPaused);
+}
+
+// 회복 제한은 원인별로 등록한다. 서로 다른 효과가 겹쳐도 한 효과의 종료가 다른 제한을 풀지 않는다.
+public interface IEnergyRecoveryBlocker
+{
+    bool BlocksRecovery(Transform target);
+}
+
+public static class PlayerEnergyRecoverySources
+{
+    private static readonly HashSet<IEnergyRecoveryBlocker> _sources = new();
+
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+    private static void ResetSources() => _sources.Clear();
+
+    public static void Register(IEnergyRecoveryBlocker source)
+    {
+        if (source != null)
+            _sources.Add(source);
+    }
+
+    public static void Unregister(IEnergyRecoveryBlocker source)
+    {
+        if (source != null)
+            _sources.Remove(source);
+    }
+
+    public static bool IsBlocked(Transform target)
+    {
+        foreach (IEnergyRecoveryBlocker source in _sources)
+        {
+            if (source.BlocksRecovery(target))
+                return true;
+        }
+        return false;
+    }
 }
 
 // 이 컴포넌트는 PlayerNetworkDriver에서 소유자가 아니라면 자동으로 비활성화되는 컴포넌트입니다.
@@ -28,6 +65,8 @@ public class EnergyTracker : NetworkBehaviour, IEnergyTracker
     private bool _isEnergyDirty;
     private Vector3 _lastPosition;
     private bool _isTrackingPaused = false; // 이동 거리 측정 일시 정지 여부
+
+    private void OnEnable() => _lastPosition = transform.position;
 
     public override void OnNetworkSpawn()
     {
@@ -56,10 +95,12 @@ public class EnergyTracker : NetworkBehaviour, IEnergyTracker
 
     private void Update()
     {
-        if (!IsOwner)
+        if (IsSpawned && !IsOwner)
             return;
 
-        if (!_isTrackingPaused)
+        // 침묵 영역에서는 이동 거리를 버린다. 영역을 벗어난 뒤 누적 충전되지 않도록
+        // 매 프레임 기준 위치를 갱신한다.
+        if (!_isTrackingPaused && !PlayerEnergyRecoverySources.IsBlocked(transform))
         {
             float moveDistance = Vector3.Distance(transform.position, _lastPosition);
 
@@ -69,6 +110,10 @@ public class EnergyTracker : NetworkBehaviour, IEnergyTracker
                 _lastPosition = transform.position;
                 _isEnergyDirty = true;
             }
+        }
+        else
+        {
+            _lastPosition = transform.position;
         }
 
         if (_isEnergyDirty && Time.unscaledTime >= _nextNetworkSyncTime)

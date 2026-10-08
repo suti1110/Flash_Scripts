@@ -27,6 +27,17 @@ public class PlayerCamera : MonoBehaviour, IReflectable
     private CinemachineCamera _firstPersonCamera;
 
     [SerializeField]
+    private CinemachineCamera _improvedThirdPersonCamera;
+
+    [Header("Improved Third Person")]
+    [SerializeField]
+    [Tooltip("CameraPivot 기준 위치입니다. X는 좌우 어깨 구도, 음수 Z는 뒤로 떨어진 거리입니다.")]
+    private Vector3 _improvedThirdPersonOffset = new(1.2f, 0.35f, -2.6f);
+
+    [SerializeField, Min(0f)]
+    private float _improvedThirdPersonBlendDuration = 0.18f;
+
+    [SerializeField]
     private PlayerLocalVisualFader _localVisualFader;
 
     [SerializeField, Min(0.001f)]
@@ -40,6 +51,7 @@ public class PlayerCamera : MonoBehaviour, IReflectable
     private Tween _fieldOfViewTween;
     private Tween _rippleTween;
     private Tween _shakeTween;
+    [SerializeField] private CameraSpeedLines _speedLinesPrefab;
     private CameraSpeedLines _speedLines;
     private float _baseFieldOfView;
     private float _baseNearClipPlane;
@@ -66,7 +78,9 @@ public class PlayerCamera : MonoBehaviour, IReflectable
     private Rigidbody _rb;
     private Vector3 _lastVelocity;
     public Vector3 LastVelocity => _lastVelocity;
-    private CameraFreezeFramePresenter _freezePresenter;
+    [SerializeField] private CameraFreezeFramePresenter _freezePresenter;
+    private SkillCameraViewMode _skillCameraView = SkillCameraViewMode.ThirdPerson;
+    private bool _isThrowAiming;
 
     private void Awake()
     {
@@ -75,10 +89,13 @@ public class PlayerCamera : MonoBehaviour, IReflectable
         _playerStateMachine = GetComponent<Player>().StateMachine;
         _baseFieldOfView = MainCamera != null ? MainCamera.fieldOfView : 60f;
         _baseNearClipPlane = MainCamera != null ? MainCamera.nearClipPlane : 0.3f;
-        _freezePresenter = GetComponent<CameraFreezeFramePresenter>();
+        _freezePresenter ??= GetComponent<CameraFreezeFramePresenter>();
         _localVisualFader ??= GetComponent<PlayerLocalVisualFader>();
-        if (_localVisualFader == null)
-            _localVisualFader = gameObject.AddComponent<PlayerLocalVisualFader>();
+
+        if (_cinemachineBrain == null || _thirdPersonCamera == null || _firstPersonCamera == null
+            || _improvedThirdPersonCamera == null)
+            EditorLog.LogError("PlayerCamera의 Cinemachine 참조가 누락되었습니다. Player 프리팹의 세 카메라와 Brain을 연결해 주세요.", this);
+
         EnsureCinemachineSetup();
         SetCameraPriorities(SkillCameraViewMode.ThirdPerson);
     }
@@ -128,22 +145,8 @@ public class PlayerCamera : MonoBehaviour, IReflectable
 
         CameraPivot.rotation = Quaternion.Euler(-_pivotRotation.y, _pivotRotation.x, 0);
 
-        Vector3 rayDirection = CameraPivot.TransformDirection(_cameraOffset.normalized);
-
-        Vector3 cameraPosition;
-        if (
-            Physics.SphereCast(
-                CameraPivot.position,
-                _cameraBlockRadius,
-                rayDirection,
-                out RaycastHit hitInfo,
-                _cameraOffset.magnitude,
-                _cameraBlockLayers
-            )
-        )
-            cameraPosition = CameraPivot.position + rayDirection * hitInfo.distance;
-        else
-            cameraPosition = CameraPivot.TransformPoint(_cameraOffset);
+        Vector3 cameraPosition = GetThirdPersonPosition(_cameraOffset);
+        Vector3 improvedCameraPosition = GetThirdPersonPosition(_improvedThirdPersonOffset);
 
         float time = Time.time;
         Vector3 ripplePosition = new(
@@ -200,6 +203,15 @@ public class PlayerCamera : MonoBehaviour, IReflectable
             SetCameraLens(_firstPersonCamera, fieldOfView, _firstPersonNearClipPlane);
         }
 
+        if (_improvedThirdPersonCamera != null)
+        {
+            _improvedThirdPersonCamera.transform.SetPositionAndRotation(
+                improvedCameraPosition + presentationOffset,
+                presentationRotation
+            );
+            SetCameraLens(_improvedThirdPersonCamera, fieldOfView, _baseNearClipPlane);
+        }
+
         _cinemachineBrain?.ManualUpdate();
     }
 
@@ -208,10 +220,30 @@ public class PlayerCamera : MonoBehaviour, IReflectable
         if (!CanPlayLocalFeedback())
             return;
 
-        EnsureCinemachineSetup();
-        if (_cinemachineBrain == null || _thirdPersonCamera == null || _firstPersonCamera == null)
+        _skillCameraView = viewMode;
+        ApplyCameraView(blendDuration);
+    }
+
+    public void SetThrowAiming(bool isAiming)
+    {
+        if (!CanPlayLocalFeedback() || _isThrowAiming == isAiming)
             return;
 
+        _isThrowAiming = isAiming;
+        ApplyCameraView(_improvedThirdPersonBlendDuration);
+    }
+
+    private void ApplyCameraView(float blendDuration)
+    {
+        EnsureCinemachineSetup();
+        if (_cinemachineBrain == null || _thirdPersonCamera == null || _firstPersonCamera == null
+            || _improvedThirdPersonCamera == null)
+            return;
+
+        // 스킬의 명시적인 시점이 우선한다. 조준 종료가 새 스킬의 시점 전환을 덮어쓰지 않는다.
+        SkillCameraViewMode viewMode = _skillCameraView != SkillCameraViewMode.ThirdPerson
+            ? _skillCameraView
+            : _isThrowAiming ? SkillCameraViewMode.ImprovedThirdPerson : SkillCameraViewMode.ThirdPerson;
         _cinemachineBrain.DefaultBlend = new CinemachineBlendDefinition(
             CinemachineBlendDefinition.Styles.EaseInOut,
             Mathf.Max(0f, blendDuration)
@@ -222,6 +254,23 @@ public class PlayerCamera : MonoBehaviour, IReflectable
             _localVisualFader?.FadeToFirstPerson(blendDuration);
         else
             _localVisualFader?.FadeToThirdPerson(blendDuration);
+    }
+
+    private Vector3 GetThirdPersonPosition(Vector3 offset)
+    {
+        Vector3 rayDirection = CameraPivot.TransformDirection(offset.normalized);
+        if (Physics.SphereCast(
+            CameraPivot.position,
+            _cameraBlockRadius,
+            rayDirection,
+            out RaycastHit hit,
+            offset.magnitude,
+            _cameraBlockLayers,
+            QueryTriggerInteraction.UseGlobal
+        ))
+            return CameraPivot.position + rayDirection * hit.distance;
+
+        return CameraPivot.TransformPoint(offset);
     }
 
     public void SetCameraRotation(Vector2 value)
@@ -245,7 +294,8 @@ public class PlayerCamera : MonoBehaviour, IReflectable
             .OnComplete(() => _mirrorRotationTween = null);
     }
 
-    public void PlayBlinkFeedback(
+    // 스킬은 필요한 카메라 연출을 조합한다. 카메라는 스킬 종류를 알지 않는다.
+    public void PlayZoomWithSpeedLines(
         float fieldOfViewIncrease,
         float zoomDuration,
         float returnDuration
@@ -259,18 +309,20 @@ public class PlayerCamera : MonoBehaviour, IReflectable
             returnDuration,
             Mathf.Max(0.01f, zoomDuration)
         );
-        _speedLines ??= CameraSpeedLines.Create(MainCamera);
+        if (_speedLines == null && _speedLinesPrefab != null)
+        {
+            _speedLines = Instantiate(_speedLinesPrefab, MainCamera.transform);
+            _speedLines.Initialize(MainCamera);
+        }
+        if (_speedLines == null) return;
         _speedLines.Play(Mathf.Max(0.01f, zoomDuration) + returnDuration);
     }
 
-    public void PlayHomingBeamFeedback(
-        float fieldOfViewDecrease,
-        float rippleStrength,
-        float returnDuration
-    )
+    public void PlayFieldOfViewFeedback(float fieldOfViewChange, float returnDuration)
     {
-        PlayFieldOfViewPulse(-Mathf.Abs(fieldOfViewDecrease), returnDuration);
-        PlayRippleFeedback(rippleStrength, returnDuration);
+        if (MainCamera == null || !CanPlayLocalFeedback())
+            return;
+        PlayFieldOfViewPulse(fieldOfViewChange, returnDuration);
     }
 
     public void PlayDamageFeedback(float rippleStrength, float duration)
@@ -281,8 +333,10 @@ public class PlayerCamera : MonoBehaviour, IReflectable
         PlayRippleFeedback(rippleStrength, duration);
     }
 
-    private void PlayRippleFeedback(float rippleStrength, float duration)
+    public void PlayRippleFeedback(float rippleStrength, float duration)
     {
+        if (MainCamera == null || !CanPlayLocalFeedback())
+            return;
         _rippleTween?.Kill();
         _rippleStrength = Mathf.Max(0f, rippleStrength);
         _rippleWeight = 1f;
@@ -298,11 +352,6 @@ public class PlayerCamera : MonoBehaviour, IReflectable
             .OnComplete(() => _rippleTween = null);
     }
 
-    public void PlayDivinePunishmentFeedback(float shakeStrength, float duration)
-    {
-        PlayShakeFeedback(shakeStrength, duration);
-    }
-
     public void PlayAttackHitFeedback(float shakeStrength, float duration)
     {
         if (MainCamera == null || !CanPlayLocalFeedback())
@@ -311,8 +360,10 @@ public class PlayerCamera : MonoBehaviour, IReflectable
         PlayShakeFeedback(shakeStrength, duration);
     }
 
-    private void PlayShakeFeedback(float shakeStrength, float duration)
+    public void PlayShakeFeedback(float shakeStrength, float duration)
     {
+        if (MainCamera == null || !CanPlayLocalFeedback())
+            return;
         _shakeTween?.Kill();
         _shakeStrength = Mathf.Max(0f, shakeStrength);
         _shakeWeight = 1f;
@@ -331,73 +382,29 @@ public class PlayerCamera : MonoBehaviour, IReflectable
 
     private void EnsureCinemachineSetup()
     {
-        if (MainCamera == null || CameraPivot == null)
-            return;
-
-        _cinemachineBrain ??= MainCamera.GetComponent<CinemachineBrain>();
-        if (_cinemachineBrain == null)
-            _cinemachineBrain = MainCamera.gameObject.AddComponent<CinemachineBrain>();
-
+        if (MainCamera == null || _cinemachineBrain == null || _thirdPersonCamera == null ||
+            _firstPersonCamera == null || _improvedThirdPersonCamera == null) return;
         _cinemachineBrain.UpdateMethod = CinemachineBrain.UpdateMethods.ManualUpdate;
         _cinemachineBrain.BlendUpdateMethod = CinemachineBrain.BrainUpdateMethods.LateUpdate;
-
-        _thirdPersonCamera = EnsurePassiveCamera(
-            _thirdPersonCamera,
-            "Third Person Camera",
-            MainCamera.transform.position,
-            MainCamera.transform.rotation
-        );
-        _firstPersonCamera = EnsurePassiveCamera(
-            _firstPersonCamera,
-            "First Person Camera",
-            CameraPivot.position,
-            CameraPivot.rotation
-        );
-
         LensSettings defaultLens = LensSettings.FromCamera(MainCamera);
         defaultLens.NearClipPlane = _baseNearClipPlane;
         _thirdPersonCamera.Lens = defaultLens;
+        _improvedThirdPersonCamera.Lens = defaultLens;
         defaultLens.NearClipPlane = _firstPersonNearClipPlane;
         _firstPersonCamera.Lens = defaultLens;
     }
 
-    private CinemachineCamera EnsurePassiveCamera(
-        CinemachineCamera camera,
-        string cameraName,
-        Vector3 position,
-        Quaternion rotation
-    )
-    {
-        if (camera != null)
-            return camera;
-
-        Transform existing = CameraPivot.Find(cameraName);
-        if (existing != null)
-            camera = existing.GetComponent<CinemachineCamera>();
-
-        if (camera == null)
-        {
-            GameObject cameraObject = new(cameraName);
-            cameraObject.transform.SetParent(CameraPivot, true);
-            cameraObject.transform.SetPositionAndRotation(position, rotation);
-            camera = cameraObject.AddComponent<CinemachineCamera>();
-        }
-
-        return camera;
-    }
-
     private void SetCameraPriorities(SkillCameraViewMode viewMode)
     {
-        if (_thirdPersonCamera == null || _firstPersonCamera == null)
+        if (_thirdPersonCamera == null || _firstPersonCamera == null || _improvedThirdPersonCamera == null)
             return;
 
-        bool useFirstPerson = viewMode == SkillCameraViewMode.FirstPerson;
-        _thirdPersonCamera.Priority = useFirstPerson
-            ? InactiveCameraPriority
-            : DefaultCameraPriority;
-        _firstPersonCamera.Priority = useFirstPerson
-            ? DefaultCameraPriority
-            : InactiveCameraPriority;
+        _thirdPersonCamera.Priority = viewMode == SkillCameraViewMode.ThirdPerson
+            ? DefaultCameraPriority : InactiveCameraPriority;
+        _firstPersonCamera.Priority = viewMode == SkillCameraViewMode.FirstPerson
+            ? DefaultCameraPriority : InactiveCameraPriority;
+        _improvedThirdPersonCamera.Priority = viewMode == SkillCameraViewMode.ImprovedThirdPerson
+            ? DefaultCameraPriority : InactiveCameraPriority;
     }
 
     private static void SetCameraLens(
@@ -463,16 +470,7 @@ public class PlayerCamera : MonoBehaviour, IReflectable
 
     public bool BeginFreezeFrame()
     {
-        if (MainCamera == null || !CanPlayLocalFeedback())
-            return false;
-
-        if (_freezePresenter == null)
-        {
-            _freezePresenter = GetComponent<CameraFreezeFramePresenter>();
-            if (_freezePresenter == null)
-                _freezePresenter = gameObject.AddComponent<CameraFreezeFramePresenter>();
-        }
-
+        if (MainCamera == null || !CanPlayLocalFeedback() || _freezePresenter == null) return false;
         return _freezePresenter.CaptureAndFreeze(MainCamera);
     }
 
@@ -501,6 +499,8 @@ public class PlayerCamera : MonoBehaviour, IReflectable
         _speedLines?.Stop();
         EndFreezeFrame();
 
+        _isThrowAiming = false;
+        _skillCameraView = SkillCameraViewMode.ThirdPerson;
         SetCameraPriorities(SkillCameraViewMode.ThirdPerson);
         _localVisualFader?.RestoreImmediately();
 
@@ -554,127 +554,5 @@ public class PlayerCamera : MonoBehaviour, IReflectable
             startPos + Vector3.right * _cameraBlockRadius,
             endPos + Vector3.right * _cameraBlockRadius
         );
-    }
-}
-
-[DisallowMultipleComponent]
-internal sealed class CameraSpeedLines : MonoBehaviour
-{
-    private const float EmissionDistance = 12f;
-    private const float ViewEdgeRadiusRatio = 0.88f;
-
-    private Camera _camera;
-    private ParticleSystem _particles;
-    private Material _runtimeMaterial;
-
-    public static CameraSpeedLines Create(Camera camera)
-    {
-        GameObject effectObject = new("Camera Speed Lines");
-        effectObject.transform.SetParent(camera.transform, false);
-        effectObject.layer = camera.gameObject.layer;
-
-        CameraSpeedLines effect = effectObject.AddComponent<CameraSpeedLines>();
-        effect._camera = camera;
-        effect.Initialize();
-        return effect;
-    }
-
-    public void Play(float duration)
-    {
-        if (_particles == null)
-            Initialize();
-
-        ConfigureEdgeEmission();
-        _particles.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
-        ParticleSystem.MainModule main = _particles.main;
-        main.duration = Mathf.Max(0.05f, duration);
-        _particles.Play(true);
-    }
-
-    public void Stop()
-    {
-        if (_particles != null)
-            _particles.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
-    }
-
-    private void Initialize()
-    {
-        if (_particles != null)
-            return;
-
-        _particles = gameObject.AddComponent<ParticleSystem>();
-        _particles.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
-
-        ParticleSystem.MainModule main = _particles.main;
-        main.loop = false;
-        main.playOnAwake = false;
-        main.simulationSpace = ParticleSystemSimulationSpace.Local;
-        main.startLifetime = new ParticleSystem.MinMaxCurve(0.16f, 0.28f);
-        main.startSpeed = new ParticleSystem.MinMaxCurve(28f, 40f);
-        main.startSize = new ParticleSystem.MinMaxCurve(0.012f, 0.035f);
-        main.startColor = new ParticleSystem.MinMaxGradient(
-            new Color(0.55f, 0.85f, 1f, 0.18f),
-            new Color(0.85f, 0.98f, 1f, 0.58f)
-        );
-        main.maxParticles = 70;
-
-        ParticleSystem.EmissionModule emission = _particles.emission;
-        emission.enabled = true;
-        emission.rateOverTime = 55f;
-
-        ParticleSystem.ShapeModule shape = _particles.shape;
-        shape.enabled = true;
-        shape.shapeType = ParticleSystemShapeType.Circle;
-        shape.radius = 4f;
-        shape.radiusThickness = 0.12f;
-        shape.position = new Vector3(0f, 0f, EmissionDistance);
-        shape.rotation = new Vector3(0f, 180f, 0f);
-
-        ParticleSystemRenderer particleRenderer = GetComponent<ParticleSystemRenderer>();
-        particleRenderer.renderMode = ParticleSystemRenderMode.Stretch;
-        particleRenderer.lengthScale = 5f;
-        particleRenderer.velocityScale = 0.08f;
-        particleRenderer.maxParticleSize = 0.12f;
-        particleRenderer.shadowCastingMode = ShadowCastingMode.Off;
-        particleRenderer.receiveShadows = false;
-        particleRenderer.sortingOrder = 100;
-
-        Shader shader = Shader.Find("Universal Render Pipeline/Particles/Unlit");
-        if (shader == null)
-            shader = Shader.Find("Particles/Standard Unlit");
-        if (shader == null)
-            return;
-
-        _runtimeMaterial = new Material(shader)
-        {
-            name = "CameraSpeedLines_RuntimeMaterial",
-            hideFlags = HideFlags.HideAndDontSave,
-        };
-        if (_runtimeMaterial.HasProperty("_BaseColor"))
-            _runtimeMaterial.SetColor("_BaseColor", Color.white);
-        if (_runtimeMaterial.HasProperty("_Color"))
-            _runtimeMaterial.SetColor("_Color", Color.white);
-        particleRenderer.sharedMaterial = _runtimeMaterial;
-    }
-
-    private void ConfigureEdgeEmission()
-    {
-        if (_particles == null || _camera == null)
-            return;
-
-        float verticalRadius =
-            Mathf.Tan(_camera.fieldOfView * 0.5f * Mathf.Deg2Rad)
-            * EmissionDistance
-            * ViewEdgeRadiusRatio;
-
-        ParticleSystem.ShapeModule shape = _particles.shape;
-        shape.radius = verticalRadius;
-        shape.scale = new Vector3(Mathf.Max(1f, _camera.aspect), 1f, 1f);
-    }
-
-    private void OnDestroy()
-    {
-        if (_runtimeMaterial != null)
-            Destroy(_runtimeMaterial);
     }
 }

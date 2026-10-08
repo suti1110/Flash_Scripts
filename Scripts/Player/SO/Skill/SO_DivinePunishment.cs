@@ -3,7 +3,7 @@ using UnityEngine;
 
 [CreateAssetMenu(fileName = "DivinePunishment", menuName = "Player/Skill/Divine Punishment")]
 public sealed class SO_DivinePunishment
-    : SO_Skill,
+    : SO_SwordSkill,
         ISkillNetworkEffect,
         ISkillCastIndicator,
         ISkillCastAudioSettings
@@ -72,7 +72,7 @@ public sealed class SO_DivinePunishment
         return TryGetStrikePoint(context, out _, out _, out failureMessage);
     }
 
-    public override void ExecuteSkill(in SkillExecutionContext context)
+    protected override void ExecuteSwordSkill(in SkillExecutionContext context, float swordSize)
     {
         Vector3 strikePoint;
         if (context.TryGetTargetPosition(out Vector3 preparedStrikePoint))
@@ -86,7 +86,9 @@ public sealed class SO_DivinePunishment
         }
 
         if (context.TryGetComponent(out PlayerCamera playerCamera))
-            playerCamera.PlayDivinePunishmentFeedback(_cameraShakeStrength, _cameraShakeDuration);
+            playerCamera.PlayShakeFeedback(
+                _cameraShakeStrength * swordSize, _cameraShakeDuration
+            );
 
         context.RequestNetworkEffect(StrikeEffectId, strikePoint, Quaternion.identity);
     }
@@ -105,7 +107,9 @@ public sealed class SO_DivinePunishment
             decalUp = Vector3.Cross(surfaceNormal, Vector3.forward);
 
         Quaternion rotation = Quaternion.LookRotation(-surfaceNormal, decalUp.normalized);
-        indicator = new SkillCastIndicatorData(strikePoint, rotation, _strikeRadius);
+        indicator = new SkillCastIndicatorData(
+            strikePoint, rotation, _strikeRadius * GetSwordSize(context.Transform)
+        );
         return true;
     }
 
@@ -116,11 +120,15 @@ public sealed class SO_DivinePunishment
         Quaternion rotation
     )
     {
+        // 조준 거리와 요청 검증 거리에 같은 검 배율을 사용한다.
+        float effectiveAimDistance = caster != null
+            ? _maxAimDistance * GetSwordSize(caster.transform)
+            : 0f;
         return effectId == StrikeEffectId
             && _strikeEffect != null
             && caster != null
             && Vector3.Distance(caster.transform.position, position)
-                <= _maxAimDistance + EffectPositionTolerance
+                <= effectiveAimDistance + EffectPositionTolerance
             && TryValidateStrikePoint(position, out _);
     }
 
@@ -142,12 +150,13 @@ public sealed class SO_DivinePunishment
             CastAudioMaxDistance
         );
 
+        float effectiveRadius = _strikeRadius * GetSwordSize(caster.transform);
         GameObject strikeEffect = Instantiate(_strikeEffect, position, rotation);
         if (strikeEffect.TryGetComponent(out DivinePunishmentStrikeEffect scalableEffect))
-            scalableEffect.Initialize(_strikeRadius);
+            scalableEffect.Initialize(effectiveRadius);
 
         if (MapPropAuthority.CanSimulate)
-            ApplyAreaDamage(caster, position);
+            ApplyAreaDamage(caster, position, effectiveRadius);
     }
 
     private bool TryGetStrikePoint(
@@ -182,7 +191,7 @@ public sealed class SO_DivinePunishment
                 aimTransform.position,
                 aimTransform.forward,
                 out RaycastHit hit,
-                _maxAimDistance,
+                _maxAimDistance * GetSwordSize(context.Transform),
                 _groundLayers,
                 QueryTriggerInteraction.Ignore
             )
@@ -233,14 +242,14 @@ public sealed class SO_DivinePunishment
         return Vector3.Angle(surfaceNormal, Vector3.up) <= _maxGroundAngle;
     }
 
-    private void ApplyAreaDamage(GameObject caster, Vector3 strikePoint)
+    private void ApplyAreaDamage(GameObject caster, Vector3 strikePoint, float effectiveRadius)
     {
         // 서버에서는 호스트가 Player, 게스트가 OtherPlayer 레이어이므로
         // 시전자 관점과 관계없이 두 플레이어 레이어를 모두 검색한다.
         int targetLayers = _targetLayers | LayerMask.GetMask("Player", "OtherPlayer");
         Collider[] targets = Physics.OverlapSphere(
             strikePoint,
-            _strikeRadius,
+            effectiveRadius,
             targetLayers,
             QueryTriggerInteraction.Collide
         );
@@ -257,7 +266,7 @@ public sealed class SO_DivinePunishment
                 continue;
 
             Vector3 direction = targetBody.worldCenterOfMass - strikePoint;
-            direction.y = Mathf.Max(direction.y, _strikeRadius * _upwardKnockbackRatio);
+            direction.y = Mathf.Max(direction.y, effectiveRadius * _upwardKnockbackRatio);
             if (direction.sqrMagnitude <= Mathf.Epsilon)
                 direction = Vector3.up;
 

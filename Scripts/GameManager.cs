@@ -172,6 +172,9 @@ public class GameManager : NetworkBehaviour
                 // 해당 클라이언트의 화면에 캐릭터가 나타나고, 그 유저에게 IsOwner 권한이 쥐어집니다.
                 netObj.SpawnAsPlayerObject(clientId, true);
 
+                if (playerInstance.TryGetComponent(out PlayerMatchState matchState))
+                    matchState.SetPlayerNumber(index + 1);
+
                 if (playerInstance.TryGetComponent(out PlayerSpawnHandler spawnHandler))
                 {
                     spawnHandler.SetSpawnPoint(spawnPos, spawnRot);

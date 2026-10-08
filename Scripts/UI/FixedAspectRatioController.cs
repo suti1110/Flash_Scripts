@@ -6,13 +6,12 @@ using UnityEngine.UI;
 
 /// <summary>
 /// Keeps the player-facing display at 16:9 and covers any unused screen area with black bars.
-/// The controller creates itself at runtime, so scenes and prefabs do not require extra setup.
+/// The authored controller prefab is placed in entry scenes and persists across scene loads.
 /// </summary>
 [DefaultExecutionOrder(-1000)]
 public sealed class FixedAspectRatioController : MonoBehaviour
 {
     private const float TargetAspectRatio = 16f / 9f;
-    private const int MaskSortingOrder = short.MaxValue;
     private const float CanvasScanInterval = 0.5f;
 
     private static FixedAspectRatioController _instance;
@@ -24,29 +23,18 @@ public sealed class FixedAspectRatioController : MonoBehaviour
     private Rect _previousViewportRect = new(0f, 0f, 1f, 1f);
     private int _screenWidth;
     private int _screenHeight;
-    private Image _leftBar;
-    private Image _rightBar;
-    private Image _bottomBar;
-    private Image _topBar;
-    private Transform _screenMaskTransform;
-    private Canvas _screenMaskCanvas;
+    [SerializeField] private Image _leftBar;
+    [SerializeField] private Image _rightBar;
+    [SerializeField] private Image _bottomBar;
+    [SerializeField] private Image _topBar;
+    [SerializeField] private Transform _screenMaskTransform;
+    [SerializeField] private Canvas _screenMaskCanvas;
     private float _nextCanvasScanTime;
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
     private static void ResetStatics()
     {
         _instance = null;
-    }
-
-    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
-    private static void CreateController()
-    {
-        if (_instance != null)
-            return;
-
-        GameObject controllerObject = new(nameof(FixedAspectRatioController));
-        _instance = controllerObject.AddComponent<FixedAspectRatioController>();
-        DontDestroyOnLoad(controllerObject);
     }
 
     private void Awake()
@@ -58,7 +46,7 @@ public sealed class FixedAspectRatioController : MonoBehaviour
         }
 
         _instance = this;
-        CreateScreenMask();
+        DontDestroyOnLoad(gameObject);
         RefreshViewport();
         RefreshOverlayCanvases();
     }
@@ -155,39 +143,6 @@ public sealed class FixedAspectRatioController : MonoBehaviour
         return new Rect(0f, (1f - viewportHeight) * 0.5f, 1f, viewportHeight);
     }
 
-    private void CreateScreenMask()
-    {
-        GameObject maskObject = new(
-            "16:9 Screen Mask",
-            typeof(RectTransform),
-            typeof(Canvas),
-            typeof(GraphicRaycaster)
-        );
-        maskObject.transform.SetParent(transform, false);
-        _screenMaskTransform = maskObject.transform;
-
-        _screenMaskCanvas = maskObject.GetComponent<Canvas>();
-        _screenMaskCanvas.renderMode = RenderMode.ScreenSpaceOverlay;
-        _screenMaskCanvas.overrideSorting = true;
-        _screenMaskCanvas.sortingOrder = MaskSortingOrder;
-
-        _leftBar = CreateBar("Left Black Bar");
-        _rightBar = CreateBar("Right Black Bar");
-        _bottomBar = CreateBar("Bottom Black Bar");
-        _topBar = CreateBar("Top Black Bar");
-    }
-
-    private Image CreateBar(string barName)
-    {
-        GameObject barObject = new(barName, typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
-        barObject.transform.SetParent(_screenMaskTransform, false);
-
-        Image bar = barObject.GetComponent<Image>();
-        bar.color = Color.black;
-        bar.raycastTarget = true;
-        return bar;
-    }
-
     private void UpdateScreenMask(Rect viewport)
     {
         SetBarRect(_leftBar, new Vector2(0f, 0f), new Vector2(viewport.xMin, 1f));
@@ -198,6 +153,7 @@ public sealed class FixedAspectRatioController : MonoBehaviour
 
     private static void SetBarRect(Image bar, Vector2 anchorMin, Vector2 anchorMax)
     {
+        if (bar == null) return;
         RectTransform rectTransform = bar.rectTransform;
         rectTransform.anchorMin = anchorMin;
         rectTransform.anchorMax = anchorMax;

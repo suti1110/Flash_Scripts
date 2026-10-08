@@ -5,9 +5,7 @@ using Random = System.Random;
 [DisallowMultipleComponent]
 public sealed class DivinePunishmentStrikeEffect : MonoBehaviour
 {
-    private const string AdditiveShaderName = "Flash/Divine Punishment Additive";
     private const int BranchCount = 2;
-    private const int RingSegments = 64;
 
     [Header("크기")]
     [SerializeField, InspectorName("기준 공격 반경"), Min(0.1f)]
@@ -24,23 +22,11 @@ public sealed class DivinePunishmentStrikeEffect : MonoBehaviour
     [SerializeField, InspectorName("번개 흔들림"), Min(0f)]
     private float _boltJitter = 0.75f;
 
-    [SerializeField, InspectorName("중심 굵기"), Min(0.01f)]
-    private float _coreWidth = 0.16f;
-
-    [SerializeField, InspectorName("광채 굵기"), Min(0.01f)]
-    private float _glowWidth = 0.8f;
-
     [SerializeField, InspectorName("번개 표시 시간"), Min(0.01f)]
     private float _boltVisibleDuration = 0.24f;
 
     [SerializeField, InspectorName("경로 재생성 간격"), Min(0.01f)]
     private float _boltRefreshInterval = 0.045f;
-
-    [SerializeField, InspectorName("중심 색상")]
-    private Color _coreColor = new(0.85f, 0.96f, 1f, 1f);
-
-    [SerializeField, InspectorName("광채 색상")]
-    private Color _glowColor = new(0.18f, 0.52f, 1f, 0.55f);
 
     [Header("충돌")]
     [SerializeField, InspectorName("지면 링 반경"), Min(0.1f)]
@@ -49,33 +35,25 @@ public sealed class DivinePunishmentStrikeEffect : MonoBehaviour
     [SerializeField, InspectorName("지면 링 지속 시간"), Min(0.01f)]
     private float _groundRingDuration = 0.55f;
 
-    [SerializeField, InspectorName("광원 세기"), Min(0f)]
-    private float _lightPeakIntensity = 12f;
-
-    [SerializeField, InspectorName("광원 범위"), Min(0f)]
-    private float _lightRange = 13f;
+    private float _lightPeakIntensity;
 
     [Header("수명과 오디오")]
     [SerializeField, InspectorName("전체 수명"), Min(0.1f)]
     private float _effectDuration = 1.25f;
 
-    [SerializeField, InspectorName("낙뢰 효과음")]
-    private AudioClip _strikeAudio;
-
-    private readonly LineRenderer[] _branchCores = new LineRenderer[BranchCount];
-    private readonly LineRenderer[] _branchGlows = new LineRenderer[BranchCount];
+    [SerializeField] private LineRenderer[] _branchCores = new LineRenderer[BranchCount];
+    [SerializeField] private LineRenderer[] _branchGlows = new LineRenderer[BranchCount];
 
     private Random _random;
     private Vector3[] _boltPositions;
-    private LineRenderer _boltCore;
-    private LineRenderer _boltGlow;
-    private LineRenderer _groundRing;
-    private Light _flashLight;
-    private Material _coreMaterial;
-    private Material _glowMaterial;
-    private Material _particleMaterial;
-    private Material _dustMaterial;
-    private Texture2D _softParticleTexture;
+    [SerializeField] private LineRenderer _boltCore;
+    [SerializeField] private LineRenderer _boltGlow;
+    [SerializeField] private LineRenderer _groundRing;
+    [SerializeField] private Light _flashLight;
+
+    [SerializeField] private ParticleSystem[] _impactParticles;
+    [SerializeField] private AudioSource _audioSource;
+    private readonly System.Collections.Generic.Dictionary<LineRenderer, Gradient> _lineColors = new();
     private float _elapsedTime;
     private float _nextBoltRefreshTime;
     private float _visualScale = 1f;
@@ -90,11 +68,27 @@ public sealed class DivinePunishmentStrikeEffect : MonoBehaviour
         _random = new Random(unchecked(GetEntityId().GetHashCode() * 397 ^ Environment.TickCount));
         _boltPositions = new Vector3[Mathf.Max(2, _boltSegments)];
 
-        CreateRuntimeMaterials();
-        CreateBoltRenderers();
-        CreateGroundRing();
-        CreateImpactParticles();
-        CreateFlashLight();
+        foreach (var line in GetComponentsInChildren<LineRenderer>(true))
+        {
+            _lineColors[line] = line.colorGradient;
+            line.widthMultiplier *= _visualScale;
+        }
+        foreach (var particles in _impactParticles)
+        {
+            if (particles == null) continue;
+            var main = particles.main;
+            main.startSpeedMultiplier *= _visualScale;
+            main.startSizeMultiplier *= _visualScale;
+            var shape = particles.shape;
+            shape.radius *= _visualScale;
+            particles.Play();
+        }
+        if (_flashLight != null)
+        {
+            _lightPeakIntensity = _flashLight.intensity;
+            _flashLight.range *= _visualScale;
+            _flashLight.transform.localPosition *= _visualScale;
+        }
         PlayStrikeAudio();
 
         RefreshBoltPath();
@@ -125,103 +119,6 @@ public sealed class DivinePunishmentStrikeEffect : MonoBehaviour
 
         UpdateGroundRing(Mathf.Clamp01(_elapsedTime / _groundRingDuration));
         UpdateFlashLight();
-    }
-
-    private void CreateRuntimeMaterials()
-    {
-        Shader shader = Shader.Find(AdditiveShaderName);
-        if (shader == null)
-            shader = Shader.Find("Universal Render Pipeline/Particles/Unlit");
-        if (shader == null)
-            shader = Shader.Find("Sprites/Default");
-
-        _softParticleTexture = CreateSoftParticleTexture();
-        _coreMaterial = CreateMaterial(shader, _coreColor, 6f, null);
-        _glowMaterial = CreateMaterial(shader, _glowColor, 2.5f, null);
-        _particleMaterial = CreateMaterial(shader, Color.white, 3.5f, _softParticleTexture);
-        _dustMaterial = CreateMaterial(shader, Color.white, 0.55f, _softParticleTexture);
-    }
-
-    private static Material CreateMaterial(
-        Shader shader,
-        Color color,
-        float intensity,
-        Texture texture
-    )
-    {
-        if (shader == null)
-            return null;
-
-        Material material = new(shader)
-        {
-            name = "DivinePunishment_RuntimeMaterial",
-            hideFlags = HideFlags.HideAndDontSave,
-        };
-
-        if (material.HasProperty("_BaseColor"))
-            material.SetColor("_BaseColor", color);
-        if (material.HasProperty("_Color"))
-            material.SetColor("_Color", color);
-        if (material.HasProperty("_Intensity"))
-            material.SetFloat("_Intensity", intensity);
-        if (texture != null)
-        {
-            if (material.HasProperty("_BaseMap"))
-                material.SetTexture("_BaseMap", texture);
-            if (material.HasProperty("_MainTex"))
-                material.SetTexture("_MainTex", texture);
-        }
-
-        return material;
-    }
-
-    private void CreateBoltRenderers()
-    {
-        _boltGlow = CreateLineRenderer("BoltGlow", _glowMaterial, Scale(_glowWidth), 1);
-        _boltCore = CreateLineRenderer("BoltCore", _coreMaterial, Scale(_coreWidth), 2);
-
-        for (int i = 0; i < BranchCount; i++)
-        {
-            _branchGlows[i] = CreateLineRenderer(
-                $"BranchGlow_{i + 1}",
-                _glowMaterial,
-                Scale(_glowWidth * 0.5f),
-                1
-            );
-            _branchCores[i] = CreateLineRenderer(
-                $"BranchCore_{i + 1}",
-                _coreMaterial,
-                Scale(_coreWidth * 0.65f),
-                2
-            );
-        }
-    }
-
-    private LineRenderer CreateLineRenderer(
-        string objectName,
-        Material material,
-        float width,
-        int sortingOrder
-    )
-    {
-        GameObject lineObject = new(objectName);
-        lineObject.transform.SetParent(transform, false);
-
-        LineRenderer line = lineObject.AddComponent<LineRenderer>();
-        line.useWorldSpace = false;
-        line.alignment = LineAlignment.View;
-        line.textureMode = LineTextureMode.Stretch;
-        line.numCornerVertices = 3;
-        line.numCapVertices = 2;
-        line.widthMultiplier = width;
-        line.widthCurve = new AnimationCurve(
-            new Keyframe(0f, 0.35f),
-            new Keyframe(0.08f, 1f),
-            new Keyframe(1f, 0.15f)
-        );
-        line.sharedMaterial = material;
-        line.sortingOrder = sortingOrder;
-        return line;
     }
 
     private void RefreshBoltPath()
@@ -284,13 +181,13 @@ public sealed class DivinePunishmentStrikeEffect : MonoBehaviour
     private void SetBoltVisibility(float alpha)
     {
         SetBoltRenderersEnabled(true);
-        SetLineColor(_boltCore, _coreColor, alpha);
-        SetLineColor(_boltGlow, _glowColor, alpha);
+        SetLineColor(_boltCore, alpha);
+        SetLineColor(_boltGlow, alpha);
 
         for (int i = 0; i < BranchCount; i++)
         {
-            SetLineColor(_branchCores[i], _coreColor, alpha * 0.8f);
-            SetLineColor(_branchGlows[i], _glowColor, alpha * 0.65f);
+            SetLineColor(_branchCores[i], alpha);
+            SetLineColor(_branchGlows[i], alpha);
         }
     }
 
@@ -306,22 +203,14 @@ public sealed class DivinePunishmentStrikeEffect : MonoBehaviour
         }
     }
 
-    private static void SetLineColor(LineRenderer line, Color color, float alpha)
+    private void SetLineColor(LineRenderer line, float alpha)
     {
-        Color startColor = color;
-        startColor.a *= alpha;
-        Color endColor = color;
-        endColor.a *= alpha * 0.55f;
-        line.startColor = startColor;
-        line.endColor = endColor;
-    }
-
-    private void CreateGroundRing()
-    {
-        _groundRing = CreateLineRenderer("GroundRing", _glowMaterial, Scale(0.13f), 1);
-        _groundRing.loop = true;
-        _groundRing.widthCurve = AnimationCurve.Constant(0f, 1f, 1f);
-        _groundRing.positionCount = RingSegments;
+        if (line == null || !_lineColors.TryGetValue(line, out var authored)) return;
+        var keys = authored.alphaKeys;
+        for (int i = 0; i < keys.Length; i++) keys[i].alpha *= Mathf.Clamp01(alpha);
+        var gradient = new Gradient { mode = authored.mode };
+        gradient.SetKeys(authored.colorKeys, keys);
+        line.colorGradient = gradient;
     }
 
     private void UpdateGroundRing(float normalizedTime)
@@ -339,143 +228,16 @@ public sealed class DivinePunishmentStrikeEffect : MonoBehaviour
         float easedTime = 1f - Mathf.Pow(1f - normalizedTime, 3f);
         float radius = Mathf.Lerp(Scale(0.25f), Scale(_groundRingRadius), easedTime);
 
-        for (int i = 0; i < RingSegments; i++)
+        for (int i = 0; i < _groundRing.positionCount; i++)
         {
-            float angle = i / (float)RingSegments * Mathf.PI * 2f;
+            float angle = i / (float)_groundRing.positionCount * Mathf.PI * 2f;
             _groundRing.SetPosition(
                 i,
                 new Vector3(Mathf.Cos(angle) * radius, 0.035f, Mathf.Sin(angle) * radius)
             );
         }
 
-        SetLineColor(_groundRing, _glowColor, (1f - normalizedTime) * 0.8f);
-    }
-
-    private void CreateImpactParticles()
-    {
-        ParticleSystem sparks = CreateBurstParticles(
-            "Sparks",
-            44,
-            new Color(0.65f, 0.9f, 1f, 1f),
-            new Vector2(0.25f, 0.7f),
-            Scale(new Vector2(5f, 11f)),
-            Scale(new Vector2(0.035f, 0.11f)),
-            1.1f,
-            68f,
-            0.2f,
-            _particleMaterial
-        );
-        ParticleSystemRenderer sparkRenderer = sparks.GetComponent<ParticleSystemRenderer>();
-        sparkRenderer.renderMode = ParticleSystemRenderMode.Stretch;
-        sparkRenderer.velocityScale = 0.08f;
-        sparkRenderer.lengthScale = 2.5f;
-
-        CreateBurstParticles(
-            "ImpactFlash",
-            14,
-            new Color(0.8f, 0.96f, 1f, 0.9f),
-            new Vector2(0.08f, 0.2f),
-            Scale(new Vector2(0.5f, 3f)),
-            Scale(new Vector2(0.45f, 1.25f)),
-            0f,
-            80f,
-            0.1f,
-            _particleMaterial
-        );
-
-        CreateBurstParticles(
-            "GroundMist",
-            22,
-            new Color(0.35f, 0.43f, 0.5f, 0.28f),
-            new Vector2(0.55f, 1f),
-            Scale(new Vector2(0.8f, 2.6f)),
-            Scale(new Vector2(0.45f, 1.35f)),
-            0.12f,
-            87f,
-            Scale(0.6f),
-            _dustMaterial
-        );
-    }
-
-    private ParticleSystem CreateBurstParticles(
-        string objectName,
-        short particleCount,
-        Color color,
-        Vector2 lifetimeRange,
-        Vector2 speedRange,
-        Vector2 sizeRange,
-        float gravityModifier,
-        float coneAngle,
-        float coneRadius,
-        Material material
-    )
-    {
-        GameObject particleObject = new(objectName);
-        particleObject.SetActive(false);
-        particleObject.transform.SetParent(transform, false);
-        particleObject.transform.localRotation = Quaternion.Euler(-90f, 0f, 0f);
-
-        ParticleSystem particleSystem = particleObject.AddComponent<ParticleSystem>();
-        ParticleSystem.MainModule main = particleSystem.main;
-        main.loop = false;
-        main.playOnAwake = false;
-        main.duration = Mathf.Min(0.2f, _effectDuration);
-        main.startLifetime = new ParticleSystem.MinMaxCurve(lifetimeRange.x, lifetimeRange.y);
-        main.startSpeed = new ParticleSystem.MinMaxCurve(speedRange.x, speedRange.y);
-        main.startSize = new ParticleSystem.MinMaxCurve(sizeRange.x, sizeRange.y);
-        main.startRotation = new ParticleSystem.MinMaxCurve(0f, Mathf.PI * 2f);
-        main.startColor = color;
-        main.gravityModifier = gravityModifier;
-        main.simulationSpace = ParticleSystemSimulationSpace.World;
-        main.maxParticles = particleCount;
-
-        ParticleSystem.EmissionModule emission = particleSystem.emission;
-        emission.rateOverTime = 0f;
-        emission.SetBursts(new[] { new ParticleSystem.Burst(0f, particleCount) });
-
-        ParticleSystem.ShapeModule shape = particleSystem.shape;
-        shape.enabled = true;
-        shape.shapeType = ParticleSystemShapeType.Cone;
-        shape.angle = coneAngle;
-        shape.radius = coneRadius;
-        shape.length = 0.1f;
-
-        ParticleSystem.ColorOverLifetimeModule colorOverLifetime = particleSystem.colorOverLifetime;
-        colorOverLifetime.enabled = true;
-        Gradient fadeGradient = new();
-        fadeGradient.SetKeys(
-            new[] { new GradientColorKey(Color.white, 0f), new GradientColorKey(Color.white, 1f) },
-            new[]
-            {
-                new GradientAlphaKey(0f, 0f),
-                new GradientAlphaKey(1f, 0.08f),
-                new GradientAlphaKey(0f, 1f),
-            }
-        );
-        colorOverLifetime.color = fadeGradient;
-
-        ParticleSystemRenderer particleRenderer =
-            particleSystem.GetComponent<ParticleSystemRenderer>();
-        particleRenderer.sharedMaterial = material;
-        particleRenderer.sortingOrder = 3;
-
-        particleObject.SetActive(true);
-        particleSystem.Play();
-        return particleSystem;
-    }
-
-    private void CreateFlashLight()
-    {
-        GameObject lightObject = new("FlashLight");
-        lightObject.transform.SetParent(transform, false);
-        lightObject.transform.localPosition = Vector3.up * Scale(1.5f);
-
-        _flashLight = lightObject.AddComponent<Light>();
-        _flashLight.type = LightType.Point;
-        _flashLight.color = _glowColor;
-        _flashLight.range = Scale(_lightRange);
-        _flashLight.intensity = _lightPeakIntensity;
-        _flashLight.shadows = LightShadows.None;
+        SetLineColor(_groundRing, (1f - normalizedTime) * 0.8f);
     }
 
     private void UpdateFlashLight()
@@ -490,17 +252,8 @@ public sealed class DivinePunishmentStrikeEffect : MonoBehaviour
 
     private void PlayStrikeAudio()
     {
-        if (_strikeAudio == null)
-            return;
-
-        AudioSource audioSource = gameObject.AddComponent<AudioSource>();
-        audioSource.clip = _strikeAudio;
-        audioSource.playOnAwake = false;
-        audioSource.spatialBlend = 1f;
-        audioSource.rolloffMode = AudioRolloffMode.Logarithmic;
-        audioSource.minDistance = Scale(4f);
-        audioSource.maxDistance = Scale(55f);
-        audioSource.Play();
+        if (_audioSource == null) return;
+        if (_audioSource.clip != null) _audioSource.Play();
     }
 
     private Vector2 RandomInsideUnitCircle()
@@ -516,54 +269,6 @@ public sealed class DivinePunishmentStrikeEffect : MonoBehaviour
     }
 
     private float Scale(float value) => value * _visualScale;
-
-    private Vector2 Scale(Vector2 value) => value * _visualScale;
-
-    private static Texture2D CreateSoftParticleTexture()
-    {
-        const int textureSize = 32;
-        Texture2D texture = new(textureSize, textureSize, TextureFormat.RGBA32, false)
-        {
-            name = "DivinePunishment_SoftParticle",
-            wrapMode = TextureWrapMode.Clamp,
-            filterMode = FilterMode.Bilinear,
-            hideFlags = HideFlags.HideAndDontSave,
-        };
-
-        Color[] pixels = new Color[textureSize * textureSize];
-        for (int y = 0; y < textureSize; y++)
-        {
-            for (int x = 0; x < textureSize; x++)
-            {
-                Vector2 position = new(
-                    (x + 0.5f) / textureSize * 2f - 1f,
-                    (y + 0.5f) / textureSize * 2f - 1f
-                );
-                float alpha = Mathf.Clamp01(1f - position.magnitude);
-                alpha = alpha * alpha * (3f - 2f * alpha);
-                pixels[y * textureSize + x] = new Color(1f, 1f, 1f, alpha);
-            }
-        }
-
-        texture.SetPixels(pixels);
-        texture.Apply(false, true);
-        return texture;
-    }
-
-    private void OnDestroy()
-    {
-        DestroyRuntimeObject(_coreMaterial);
-        DestroyRuntimeObject(_glowMaterial);
-        DestroyRuntimeObject(_particleMaterial);
-        DestroyRuntimeObject(_dustMaterial);
-        DestroyRuntimeObject(_softParticleTexture);
-    }
-
-    private static void DestroyRuntimeObject(UnityEngine.Object runtimeObject)
-    {
-        if (runtimeObject != null)
-            Destroy(runtimeObject);
-    }
 
     private void OnValidate()
     {

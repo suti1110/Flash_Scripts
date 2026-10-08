@@ -21,13 +21,30 @@ public sealed class PlayerMapInteraction : NetworkBehaviour
 
     private GrabbableObject _heldObject;
     private Player _player;
+    private PlayerAnimation _playerAnimation;
+    private PlayerCamera _playerCamera;
     private readonly PlayerActionStateMachine _throwActionStateMachine = new();
+    private readonly NetworkVariable<NetworkObjectReference> _heldObjectReference = new(
+        default,
+        NetworkVariableReadPermission.Everyone,
+        NetworkVariableWritePermission.Server
+    );
     private bool _isThrowPending;
+    private bool _isAiming;
     private bool _isLocalInteractionCancelled;
+    private LineRenderer _trajectoryLine;
+    [SerializeField] private LineRenderer _trajectoryPrefab;
+    [SerializeField] private ThrowImpactDecal _impactDecalPrefab;
+    private ThrowImpactDecal _impactDecal;
+    private readonly RaycastHit[] _trajectoryHits = new RaycastHit[16];
+    private const int TrajectorySteps = 75;
+    private const float TrajectoryStepTime = 0.04f;
 
     private void Awake()
     {
         _player = GetComponent<Player>();
+        _playerAnimation = GetComponent<PlayerAnimation>();
+        _playerCamera = GetComponent<PlayerCamera>();
         _player.StateMachine.StateChanged += HandlePlayerStateChanged;
         _throwActionStateMachine.Started += HandleThrowStarted;
         _throwActionStateMachine.ExecutionPointReached += HandleThrowExecutionPointReached;
@@ -40,7 +57,24 @@ public sealed class PlayerMapInteraction : NetworkBehaviour
         if (IsSpawned && !IsOwner)
             return;
 
+        if (_isAiming && !TryGetLocallyHeldObject(out _))
+        {
+            CancelAiming();
+            return;
+        }
+
         _throwActionStateMachine.Tick(Time.deltaTime);
+        if (_throwActionStateMachine.IsRunning && _throwActionStateMachine.Duration > 0f)
+            _playerAnimation?.SetThrowPlaybackTime(_throwActionStateMachine.ElapsedTime / _throwActionStateMachine.Duration);
+    }
+
+    private void LateUpdate()
+    {
+        if (IsSpawned && !IsOwner)
+            return;
+
+        // 애니메이션이 손 위치를 갱신한 뒤 궤적의 시작점을 잡는다.
+        UpdateTrajectory();
     }
 
     // 잡은 물체의 실제 부모와 배치 기준을 한 곳에서 제공한다.
@@ -52,16 +86,26 @@ public sealed class PlayerMapInteraction : NetworkBehaviour
 
     public void Interact()
     {
-        if (Time.timeScale <= 0f || (IsSpawned && !IsOwner))
+        if (Time.timeScale <= 0f || (IsSpawned && !IsOwner) || _throwActionStateMachine.IsRunning)
             return;
 
         // 이 입력 이후에 다른 State가 먼저 성립하는지 추적하여 지연 도착한 투척 시작 RPC를 폐기한다.
         _isLocalInteractionCancelled = false;
 
+        if (TryGetLocallyHeldObject(out _))
+            _isAiming = true;
+
         if (IsSpawned)
             InteractRpc();
         else
             InteractOnAuthority();
+
+        if (_isAiming)
+        {
+            TryStartThrowAction();
+            if (_isAiming && _throwActionStateMachine.IsRunning)
+                _playerCamera?.SetThrowAiming(true);
+        }
     }
 
     [Rpc(SendTo.Server, InvokePermission = RpcInvokePermission.Everyone)]
@@ -75,10 +119,10 @@ public sealed class PlayerMapInteraction : NetworkBehaviour
 
     private void InteractOnAuthority()
     {
-        // 서버가 이미 들고 있는 물체를 기억하므로 같은 입력을 잡기와 던지기 사이에서 전환할 수 있다.
+        // 서버가 이미 들고 있는 물체를 기억하므로 같은 입력을 잡기와 조준 사이에서 전환할 수 있다.
         if (_heldObject != null)
         {
-            BeginThrowOnAuthority();
+            _isThrowPending = true;
             return;
         }
 
@@ -120,6 +164,8 @@ public sealed class PlayerMapInteraction : NetworkBehaviour
     internal void SetHeldObject(GrabbableObject grabbable)
     {
         _heldObject = grabbable;
+        if (IsSpawned && IsServer)
+            _heldObjectReference.Value = new NetworkObjectReference(grabbable.NetworkObject);
     }
 
     internal void ClearHeldObject(GrabbableObject grabbable)
@@ -128,6 +174,8 @@ public sealed class PlayerMapInteraction : NetworkBehaviour
         {
             _heldObject = null;
             _isThrowPending = false;
+            if (IsSpawned && IsServer)
+                _heldObjectReference.Value = default;
         }
     }
 
@@ -137,7 +185,34 @@ public sealed class PlayerMapInteraction : NetworkBehaviour
         _heldObject?.Drop();
     }
 
-    // PlayerActionStateMachine의 발동 지점에서만 호출된다. 클라이언트는 실행 의도만 보내고 실제 투척은 서버가 검증한다.
+    public void ReleaseInteract()
+    {
+        if (!_isAiming)
+            return;
+
+        StopAimingPresentation();
+        if (Time.timeScale <= 0f || (IsSpawned && !IsOwner))
+        {
+            _throwActionStateMachine.Cancel();
+            CancelPendingThrow();
+            return;
+        }
+
+        if (_throwActionStateMachine.IsRunning)
+            _throwActionStateMachine.Release();
+    }
+
+    public void CancelAiming()
+    {
+        if (!_isAiming && !_throwActionStateMachine.IsRunning)
+            return;
+
+        StopAimingPresentation();
+        _throwActionStateMachine.Cancel();
+        CancelPendingThrow();
+    }
+
+    // 버튼을 놓을 때 호출된다. 클라이언트는 실행 의도만 보내고 실제 투척은 서버가 검증한다.
     private void ExecutePendingThrow()
     {
         Vector3 cameraDirection = GetCameraThrowDirection();
@@ -160,30 +235,6 @@ public sealed class PlayerMapInteraction : NetworkBehaviour
         CancelPendingThrowRpc();
     }
 
-    private void BeginThrowOnAuthority()
-    {
-        if (_isThrowPending || _heldObject == null)
-            return;
-
-        _isThrowPending = true;
-        EnterThrowingStateOnOwner();
-    }
-
-    private void EnterThrowingStateOnOwner()
-    {
-        // 투척 성립은 서버가 검증하고, 입력·애니메이션 State를 소유한 클라이언트에 상태 진입만 요청한다.
-        if (IsSpawned)
-            EnterThrowingStateRpc();
-        else
-            TryStartThrowAction();
-    }
-
-    [Rpc(SendTo.Owner)]
-    private void EnterThrowingStateRpc()
-    {
-        TryStartThrowAction();
-    }
-
     private void TryStartThrowAction()
     {
         if (
@@ -192,11 +243,13 @@ public sealed class PlayerMapInteraction : NetworkBehaviour
             || _throwActionStateMachine.IsRunning
         )
         {
+            StopAimingPresentation();
             CancelPendingThrow();
             return;
         }
 
-        _throwActionStateMachine.Start(_throwing.ActionDuration, _throwing.ExecuteTime);
+        _playerAnimation?.SetThrowPlaybackTime(0f);
+        _throwActionStateMachine.Start(_throwing.ActionDuration, _throwing.ExecuteTime, waitForRelease: true);
     }
 
     private void HandleThrowStarted()
@@ -211,11 +264,6 @@ public sealed class PlayerMapInteraction : NetworkBehaviour
         }
     }
 
-    private void HandleThrowExecutionPointReached()
-    {
-        ExecutePendingThrow();
-    }
-
     private void HandleThrowCompleted()
     {
         if (
@@ -228,9 +276,18 @@ public sealed class PlayerMapInteraction : NetworkBehaviour
         }
     }
 
+    private void HandleThrowExecutionPointReached()
+    {
+        _playerAnimation?.SetThrowPlaybackTime(_throwing.ExecuteTime, true);
+        ExecutePendingThrow();
+    }
+
     private void HandleThrowCancelled()
     {
+        StopAimingPresentation();
         CancelPendingThrow();
+        if (_player != null && _player.StateMachine.IsInitialized && _player.StateMachine.IsInState<PlayerThrowingState>())
+            _player.StateMachine.TryChangeState<PlayerIdleState>();
     }
 
     [Rpc(SendTo.Server, InvokePermission = RpcInvokePermission.Everyone)]
@@ -250,37 +307,155 @@ public sealed class PlayerMapInteraction : NetworkBehaviour
         if (!_isThrowPending || _heldObject == null || _throwing == null)
             return;
 
-        // 일반 모드는 SO 원본을 사용하고 Custom Room에서는 서버가 동기화한 방 설정을 실제 투척 속도로 사용한다.
-        float throwSpeed =
-            RelayManager.Instance != null && RelayManager.Instance.IsCustomRoom
-                ? RelayManager.Instance.CurrentRoomSettings.ThrowPower
-                : _throwing.ThrowSpeed;
+        // 일반 모드는 SO 원본을 사용하고 Custom Room에서는 서버가 동기화한 방 설정을 사용한다.
+        float throwImpulse = GetThrowImpulse();
 
         // 소유자의 카메라 방향을 기준으로 조준하고 SO의 투척각을 추가한다.
+        Vector3 throwDirection = GetThrowDirection(cameraDirection);
+
+        // Throw가 성공하면 GrabbableObject가 ClearHeldObject를 호출하여 대기 상태도 원자적으로 끝낸다.
+        if (!_heldObject.Throw(throwDirection, throwImpulse))
+            _isThrowPending = false;
+    }
+
+    private Vector3 GetThrowDirection(Vector3 cameraDirection)
+    {
         Vector3 aimDirection = cameraDirection.sqrMagnitude > Mathf.Epsilon
             ? cameraDirection.normalized
             : transform.forward;
         Vector3 cameraRight = Vector3.Cross(Vector3.up, aimDirection).normalized;
         if (cameraRight.sqrMagnitude <= Mathf.Epsilon)
             cameraRight = transform.right;
-        Vector3 throwDirection = Quaternion.AngleAxis(
-            -_throwing.ThrowAngle,
-            cameraRight
-        ) * aimDirection;
+        return Quaternion.AngleAxis(-_throwing.ThrowAngle, cameraRight) * aimDirection;
+    }
 
-        // Throw가 성공하면 GrabbableObject가 ClearHeldObject를 호출하여 대기 상태도 원자적으로 끝낸다.
-        if (!_heldObject.Throw(throwDirection, throwSpeed))
-            _isThrowPending = false;
+    private float GetThrowImpulse()
+    {
+        return RelayManager.Instance != null && RelayManager.Instance.IsCustomRoom
+            ? RelayManager.Instance.CurrentRoomSettings.ThrowPower
+            : _throwing.ThrowSpeed;
+    }
+
+    private bool TryGetLocallyHeldObject(out GrabbableObject grabbable)
+    {
+        grabbable = _heldObject;
+        if (grabbable != null)
+            return true;
+
+        if (
+            IsSpawned
+            && _heldObjectReference.Value.TryGet(out NetworkObject networkObject)
+            && networkObject.TryGetComponent(out grabbable)
+        )
+            return true;
+
+        grabbable = null;
+        return false;
+    }
+
+    private void UpdateTrajectory()
+    {
+        if (!_isAiming || Time.timeScale <= 0f || _throwing == null || !TryGetLocallyHeldObject(out GrabbableObject held))
+        {
+            HideTrajectory();
+            return;
+        }
+
+        EnsureTrajectoryLine();
+        if (_trajectoryLine == null)
+            return;
+
+        Vector3 position = held.transform.position;
+        Vector3 direction = GetThrowDirection(GetCameraThrowDirection()).normalized;
+        Vector3 velocity = direction * (GetThrowImpulse() / Mathf.Max(held.Mass, 0.0001f));
+        Vector3 gravity = held.UsesGravity ? Physics.gravity : Vector3.zero;
+        float damping = Mathf.Max(0f, held.LinearDamping);
+        _trajectoryLine.enabled = true;
+        _trajectoryLine.positionCount = TrajectorySteps + 1;
+        _trajectoryLine.SetPosition(0, position);
+
+        for (int i = 1; i <= TrajectorySteps; i++)
+        {
+            // Rigidbody의 반암시적 적분과 선형 감쇠를 고정 시간 간격으로 근사한다.
+            velocity = (velocity + gravity * TrajectoryStepTime) / (1f + damping * TrajectoryStepTime);
+            Vector3 nextPosition = position + velocity * TrajectoryStepTime;
+            Vector3 segment = nextPosition - position;
+            float segmentLength = segment.magnitude;
+            float nearestDistance = segmentLength;
+            bool hitSurface = false;
+            RaycastHit nearestHit = default;
+            int hitCount = Physics.RaycastNonAlloc(
+                position,
+                segment / Mathf.Max(segmentLength, 0.0001f),
+                _trajectoryHits,
+                segmentLength,
+                Physics.AllLayers,
+                QueryTriggerInteraction.Ignore
+            );
+            for (int hitIndex = 0; hitIndex < hitCount; hitIndex++)
+            {
+                Collider collider = _trajectoryHits[hitIndex].collider;
+                if (collider == null || collider.transform.IsChildOf(transform) || collider.transform.IsChildOf(held.transform))
+                    continue;
+
+                if (_trajectoryHits[hitIndex].distance < nearestDistance)
+                {
+                    nearestDistance = _trajectoryHits[hitIndex].distance;
+                    hitSurface = true;
+                    nearestHit = _trajectoryHits[hitIndex];
+                }
+            }
+
+            if (hitSurface)
+            {
+                _trajectoryLine.SetPosition(i, position + segment.normalized * nearestDistance);
+                _trajectoryLine.positionCount = i + 1;
+                _impactDecal?.Show(nearestHit);
+                return;
+            }
+
+            position = nextPosition;
+            _trajectoryLine.SetPosition(i, position);
+        }
+        _impactDecal?.Hide();
+    }
+
+    private void EnsureTrajectoryLine()
+    {
+        if (_trajectoryLine == null && _trajectoryPrefab != null)
+        {
+            _trajectoryLine = Instantiate(_trajectoryPrefab, transform);
+            _trajectoryLine.enabled = false;
+        }
+        if (_impactDecal == null && _impactDecalPrefab != null)
+        {
+            _impactDecal = Instantiate(_impactDecalPrefab, transform);
+            _impactDecal.Hide();
+        }
+    }
+
+    private void HideTrajectory()
+    {
+        _impactDecal?.Hide();
+        if (_trajectoryLine != null)
+            _trajectoryLine.enabled = false;
+    }
+
+    private void StopAimingPresentation()
+    {
+        _isAiming = false;
+        HideTrajectory();
+        _playerCamera?.SetThrowAiming(false);
     }
 
     private Vector3 GetCameraThrowDirection()
     {
-        if (TryGetComponent(out PlayerCamera playerCamera))
+        if (_playerCamera != null)
         {
-            if (playerCamera.MainCamera != null)
-                return playerCamera.MainCamera.transform.forward;
-            if (playerCamera.CameraPivot != null)
-                return playerCamera.CameraPivot.forward;
+            if (_playerCamera.MainCamera != null)
+                return _playerCamera.MainCamera.transform.forward;
+            if (_playerCamera.CameraPivot != null)
+                return _playerCamera.CameraPivot.forward;
         }
 
         return transform.forward;
@@ -319,6 +494,7 @@ public sealed class PlayerMapInteraction : NetworkBehaviour
         }
 
         _isLocalInteractionCancelled = true;
+        CancelAiming();
         CancelPendingThrow();
     }
 
@@ -329,8 +505,16 @@ public sealed class PlayerMapInteraction : NetworkBehaviour
             DropHeldObject();
 
         _isThrowPending = false;
+        StopAimingPresentation();
+        _throwActionStateMachine.Cancel();
 
         base.OnNetworkDespawn();
+    }
+
+    private void OnDisable()
+    {
+        CancelAiming();
+        HideTrajectory();
     }
 
     public override void OnDestroy()
@@ -342,6 +526,8 @@ public sealed class PlayerMapInteraction : NetworkBehaviour
         _throwActionStateMachine.ExecutionPointReached -= HandleThrowExecutionPointReached;
         _throwActionStateMachine.Completed -= HandleThrowCompleted;
         _throwActionStateMachine.Cancelled -= HandleThrowCancelled;
+
+
 
         base.OnDestroy();
     }

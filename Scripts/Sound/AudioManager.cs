@@ -8,7 +8,8 @@ public class AudioManager : MonoBehaviour
 
     [SerializeField]
     private AudioSource _sfx;
-    private AudioSource _hitStopSfx;
+    [SerializeField] private AudioSource _hitStopSfx;
+    [SerializeField] private AudioSource _spatialSfxPrefab;
     public SO_SFXContainer Container;
 
     private Tween _bgmDuckTween;
@@ -45,10 +46,9 @@ public class AudioManager : MonoBehaviour
             if (_bgm != null)
                 _bgmNormalVolume = _bgm.volume;
 
-            Configure2DSfxSource(_sfx, true);
-
-            _hitStopSfx = gameObject.AddComponent<AudioSource>();
-            Configure2DSfxSource(_hitStopSfx, true);
+            // Listener pause is runtime state; source/mixer/attenuation settings are authored.
+            if (_sfx != null) _sfx.ignoreListenerPause = true;
+            if (_hitStopSfx != null) _hitStopSfx.ignoreListenerPause = true;
         }
         else
         {
@@ -96,18 +96,18 @@ public class AudioManager : MonoBehaviour
     )
     {
         AudioManager manager = Instance;
-        if (manager == null || clip == null)
+        if (manager == null || clip == null || manager._spatialSfxPrefab == null)
             return;
 
-        GameObject audioObject = new($"SFX_{clip.name}");
-        audioObject.transform.position = position;
-
-        AudioSource source = audioObject.AddComponent<AudioSource>();
-        manager.ConfigureSpatialSource(source, minDistance, maxDistance);
+        AudioSource source = Instantiate(manager._spatialSfxPrefab, position, Quaternion.identity);
+        source.name = $"SFX_{clip.name}";
+        // Non-default distances are explicit gameplay requests. Otherwise keep prefab tuning.
+        if (minDistance != 1f) source.minDistance = Mathf.Max(0.01f, minDistance);
+        if (maxDistance != 80f) source.maxDistance = Mathf.Max(source.minDistance, maxDistance);
         source.clip = clip;
-        source.volume = Mathf.Clamp01(volume);
+        source.volume *= Mathf.Clamp01(volume);
         source.Play();
-        Destroy(audioObject, clip.length + 0.1f);
+        Destroy(source.gameObject, clip.length / Mathf.Max(0.01f, Mathf.Abs(source.pitch)) + 0.1f);
     }
 
     public static void ConfigureSpatialSfxSource(

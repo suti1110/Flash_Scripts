@@ -32,18 +32,27 @@ public class MatchingUI : MonoBehaviour
     [SerializeField]
     private int _rouletteSpinCount = 100;
 
-    private Tweener _textTweener;
+    private Tween _textTweener;
+    private MapRouletteView _mapRoulette;
+    private bool _started;
     private int _lastPendingPlayerCount = -1;
     private int _lastPendingMaxPlayers = -1;
 
     private void Start()
     {
+        _started = true;
         if (RelayManager.Instance != null)
         {
             RelayManager.Instance.OnMatchingStateChanged += OnMatchingStateChanged;
 
             OnMatchingStateChanged(RelayManager.Instance.MatchingState);
         }
+    }
+
+    private void OnEnable()
+    {
+        if (_started && RelayManager.Instance != null)
+            OnMatchingStateChanged(RelayManager.Instance.MatchingState);
     }
 
     private void OnDestroy()
@@ -54,6 +63,13 @@ public class MatchingUI : MonoBehaviour
         _textTweener?.Kill();
     }
 
+    private void OnDisable()
+    {
+        _textTweener?.Kill();
+        if (_mapRoulette != null)
+            _mapRoulette.Hide();
+    }
+
     private void OnMatchingStateChanged(MatchingState state)
     {
         _pendingPlayerCountText.gameObject.SetActive(false);
@@ -61,6 +77,9 @@ public class MatchingUI : MonoBehaviour
         _isHostText.SetActive(RelayManager.Instance.IsHost);
         _textTweener?.Kill();
         _textTweener = null;
+        _matchingText.gameObject.SetActive(true);
+        if (_mapRoulette != null)
+            _mapRoulette.Hide();
         _lastPendingPlayerCount = -1;
         _lastPendingMaxPlayers = -1;
 
@@ -92,83 +111,82 @@ public class MatchingUI : MonoBehaviour
             {
                 string[] modeNames = RelayManager.Instance.GetAvailableGameModeDisplayNames();
                 string targetMode = RelayManager.Instance.GameModeDisplayName;
-
                 if (modeNames.Length == 0 || string.IsNullOrWhiteSpace(targetMode))
                 {
                     _matchingText.text = _noneText;
                     break;
                 }
-
-                _textTweener = CreateSelectionTween(
-                    "Mode",
-                    modeNames,
-                    targetMode,
-                    RelayManager.Instance.ModeSelectionDuration
-                );
+                _textTweener = CreateModeSelectionTween(
+                    modeNames, targetMode, RelayManager.Instance.ModeSelectionDuration);
                 break;
             }
 
             case MatchingState.SelectMap:
             {
-                string[] mapNames = RelayManager.Instance.GetAvailableMapDisplayNames();
-                string targetMap = RelayManager.Instance.MapDisplayName;
+                SO_MapDefinition[] maps = RelayManager.Instance.GetAvailableMaps();
+                string targetMap = RelayManager.Instance.MapName;
 
-                if (mapNames.Length == 0 || string.IsNullOrWhiteSpace(targetMap))
+                if (maps.Length == 0 || string.IsNullOrWhiteSpace(targetMap))
                 {
                     _matchingText.text = _noneText;
                     break;
                 }
 
-                _textTweener = CreateSelectionTween(
-                    "Map",
-                    mapNames,
-                    targetMap,
-                    RelayManager.Instance.MapSelectionDuration
-                );
+                if (_mapRoulette == null)
+                {
+                    var view = new GameObject("Map Roulette", typeof(RectTransform));
+                    view.transform.SetParent(transform, false);
+                    _mapRoulette = view.AddComponent<MapRouletteView>();
+                    _mapRoulette.Initialize(_matchingText.font);
+                }
+                _matchingText.gameObject.SetActive(false);
+                _textTweener = _mapRoulette.Play(
+                    maps, targetMap, RelayManager.Instance.GameModeDisplayName,
+                    RelayManager.Instance.MapSelectionDuration, _rouletteSpinCount);
+                if (_textTweener == null)
+                {
+                    _matchingText.gameObject.SetActive(true);
+                    _matchingText.text = RelayManager.Instance.MapDisplayName;
+                }
                 break;
             }
         }
     }
 
-    private Tweener CreateSelectionTween(
-        string title,
-        string[] options,
-        string target,
-        float duration
-    )
+    // 모드는 기존처럼 이름을 빠르게 교체하다가 서버가 정한 결과에 멈춥니다.
+    private Tweener CreateModeSelectionTween(string[] options, string target, float duration)
     {
         int index = -1;
         int targetIndex = System.Array.IndexOf(options, target);
         if (targetIndex < 0)
             targetIndex = 0;
-
         int finalSpins = (_rouletteSpinCount / options.Length) * options.Length + targetIndex;
 
-        return DOTween
-            .To(
-                getter: () => 0f,
-                setter: value =>
-                {
-                    int nextIndex = Mathf.FloorToInt(value) % options.Length;
-                    if (index == nextIndex)
-                        return;
-
-                    if (index >= 0)
-                        AudioManager.SfxPlay(AudioManager.Instance.Container.Roulette);
-
-                    index = nextIndex;
-                    _matchingText.text = $"{title}\n<size=150%>{options[index]}</size>";
-                },
-                endValue: finalSpins,
-                duration: duration
-            )
+        return DOTween.To(
+            () => 0f,
+            value =>
+            {
+                int nextIndex = Mathf.FloorToInt(value) % options.Length;
+                if (index == nextIndex)
+                    return;
+                if (index >= 0 && AudioManager.Instance != null)
+                    AudioManager.SfxPlay(AudioManager.Instance.Container.Roulette);
+                index = nextIndex;
+                _matchingText.text = $"Mode\n<size=150%>{options[index]}</size>";
+            },
+            finalSpins,
+            Mathf.Max(0, duration)
+        )
             .SetEase(Ease.OutExpo)
+            .SetUpdate(true)
+            .SetLink(gameObject)
             .OnComplete(() =>
             {
-                _matchingText.text = $"{title}\n<color=yellow><size=150%>{target}</size></color>";
-
-                AudioManager.SfxPlay(AudioManager.Instance.Container.Select);
-                _matchingText.transform.DOPunchScale(Vector3.one * 0.3f, 0.5f, 5, 1f);
+                _matchingText.text = $"Mode\n<color=yellow><size=150%>{target}</size></color>";
+                if (AudioManager.Instance != null)
+                    AudioManager.SfxPlay(AudioManager.Instance.Container.Select);
+                _matchingText.transform.DOPunchScale(Vector3.one * 0.3f, 0.5f, 5, 1f)
+                    .SetUpdate(true).SetLink(gameObject);
             });
     }
 

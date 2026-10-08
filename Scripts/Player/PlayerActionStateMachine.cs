@@ -24,8 +24,9 @@ public sealed class PlayerActionStateMachine
 
     private float _executionTime;
     private bool _hasExecuted;
+    private bool _waitsForRelease;
 
-    public void Start(float duration, float normalizedExecutionTime)
+    public void Start(float duration, float normalizedExecutionTime, bool waitForRelease = false)
     {
         if (IsRunning)
             throw new InvalidOperationException("A player action is already running.");
@@ -34,6 +35,7 @@ public sealed class PlayerActionStateMachine
         ElapsedTime = 0f;
         _executionTime = Duration * Math.Clamp(normalizedExecutionTime, 0f, 1f);
         _hasExecuted = false;
+        _waitsForRelease = waitForRelease;
         Phase = PlayerActionPhase.Windup;
 
         Started?.Invoke();
@@ -59,8 +61,25 @@ public sealed class PlayerActionStateMachine
         Cancelled?.Invoke();
     }
 
+    public void Release()
+    {
+        if (!IsRunning || !_waitsForRelease)
+            return;
+
+        _waitsForRelease = false;
+        // 짧게 눌렀어도 발동 지점으로 즉시 진행하고 남은 회복 시간만 재생한다.
+        ElapsedTime = Math.Max(ElapsedTime, _executionTime);
+        Advance(0f);
+    }
+
     private void Advance(float deltaTime)
     {
+        if (_waitsForRelease)
+        {
+            ElapsedTime = Math.Min(Math.Max(0f, _executionTime - 0.001f), ElapsedTime + deltaTime);
+            return;
+        }
+
         ElapsedTime = Math.Min(Duration, ElapsedTime + deltaTime);
 
         if (!_hasExecuted && ElapsedTime >= _executionTime)

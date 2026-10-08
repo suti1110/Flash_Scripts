@@ -57,6 +57,7 @@ public class Player : MonoBehaviour, IPlayerMovingInput
         _jumping.Jumping.Jump.performed += input => _jump.Jump();
         _attacking.Attacking.Attack.performed += input => _attack.Attack();
         _interacting.Interacting.Interact.performed += input => _mapInteraction?.Interact();
+        _interacting.Interacting.Interact.canceled += input => _mapInteraction?.ReleaseInteract();
         BindSkillInputs();
     }
 
@@ -86,7 +87,10 @@ public class Player : MonoBehaviour, IPlayerMovingInput
             _attacking.Enable();
 
         if (constraints.HasFlag(PlayerInputType.Interacting))
+        {
+            _mapInteraction?.CancelAiming();
             _interacting.Disable();
+        }
         else
             _interacting.Enable();
 
@@ -149,6 +153,7 @@ public class Player : MonoBehaviour, IPlayerMovingInput
 
     private void OnDisable()
     {
+        _mapInteraction?.CancelAiming();
         _moving.Disable();
         _jumping.Disable();
         _attacking.Disable();

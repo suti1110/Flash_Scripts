@@ -26,12 +26,34 @@ public class TubeTrail : MonoBehaviour
     [SerializeField]
     private Color _trailColor = Color.white;
 
+    [Header("Speed")]
+    [SerializeField, InspectorName("속도 기준 Rigidbody")]
+    private Rigidbody _velocitySource;
+
+    [SerializeField, InspectorName("표시 시작 속도"), Min(0f)]
+    private float _minimumSpeed = 15f;
+
+    [SerializeField, InspectorName("푸른 발광 완료 속도"), Min(0f)]
+    [Tooltip("표시 시작 속도부터 이 속도까지 InQuint(t⁵)로 일반 색상과 HDR 발광 색상을 보간합니다.")]
+    private float _glowSpeed = 45f;
+
+    [SerializeField, InspectorName("고속 발광 색상"), ColorUsage(true, true)]
+    private Color _glowColor = new(0.3f, 6f, 24f, 0.85f);
+
+    [SerializeField, InspectorName("원격 이동 속도 평활 시간"), Min(0f)]
+    private float _motionSpeedSmoothing = 0.08f;
+
     [Header("Offset")]
     [SerializeField]
     private Vector3 _trailOffset = Vector3.zero; // 로컬 기준 오프셋
 
     private MeshFilter _meshFilter;
     private Mesh _mesh;
+    private MeshRenderer _meshRenderer;
+    private Vector3 _previousPosition;
+    private float _motionSpeed;
+    public float CurrentSpeed { get; private set; }
+    public bool IsGlowing => CurrentSpeed >= Mathf.Max(_minimumSpeed, _glowSpeed);
     private readonly List<Vector3> _points = new();
     private readonly List<float> _pointTimes = new();
 
@@ -44,6 +66,7 @@ public class TubeTrail : MonoBehaviour
     void Awake()
     {
         _meshFilter = GetComponent<MeshFilter>();
+        _meshRenderer = GetComponent<MeshRenderer>();
         _mesh = new Mesh { name = "TubeTrail" };
         _mesh.MarkDynamic();
         _meshFilter.mesh = _mesh;
@@ -67,8 +90,32 @@ public class TubeTrail : MonoBehaviour
         }
     }
 
-    void Update()
+    private void OnEnable()
     {
+        _previousPosition = transform.position;
+        _motionSpeed = 0f;
+        CurrentSpeed = 0f;
+        _meshRenderer.enabled = false;
+    }
+
+    void LateUpdate()
+    {
+        // Kinematic remote players have no simulated velocity. Measure their
+        // replicated transform instead; smooth interpolation between network ticks.
+        if (Time.deltaTime <= 0f) return;
+        float movementSpeed = Vector3.Distance(transform.position, _previousPosition) / Time.deltaTime;
+        _previousPosition = transform.position;
+        float weight = _motionSpeedSmoothing <= 0f ? 1f
+            : 1f - Mathf.Exp(-Time.deltaTime / _motionSpeedSmoothing);
+        _motionSpeed = Mathf.Lerp(_motionSpeed, movementSpeed, weight);
+        CurrentSpeed = _velocitySource != null && !_velocitySource.isKinematic
+            ? _velocitySource.linearVelocity.magnitude : _motionSpeed;
+        if (CurrentSpeed < _minimumSpeed)
+        {
+            ClearTrail();
+            return;
+        }
+
         float currentTime = Time.time;
 
         // 오래된 포인트 제거
@@ -99,18 +146,28 @@ public class TubeTrail : MonoBehaviour
         }
 
         GenerateTubeMesh();
+        _meshRenderer.enabled = _points.Count >= 2;
     }
 
     void GenerateTubeMesh()
     {
         if (_points.Count < 2)
+        {
+            _mesh.Clear();
             return;
+        }
 
         _vertices.Clear();
         _triangles.Clear();
         _uvs.Clear();
         _colors.Clear();
 
+        float speedT = _glowSpeed > _minimumSpeed
+            ? Mathf.InverseLerp(_minimumSpeed, _glowSpeed, CurrentSpeed)
+            : (IsGlowing ? 1f : 0f);
+        float inQuint = speedT * speedT * speedT * speedT * speedT;
+        // Color.Lerp preserves HDR channels above 1; only the blend weight is clamped.
+        Color color = Color.Lerp(_trailColor, _glowColor, inQuint);
         for (int i = 0; i < _points.Count; i++)
         {
             Vector3 forward;
@@ -135,7 +192,7 @@ public class TubeTrail : MonoBehaviour
                 _vertices.Add(transform.InverseTransformPoint(worldPos));
                 _uvs.Add(new Vector2((float)j / _sides, t));
                 _colors.Add(
-                    new Color(_trailColor.r, _trailColor.g, _trailColor.b, _trailColor.a * alpha)
+                    new Color(color.r, color.g, color.b, color.a * alpha)
                 );
             }
         }
@@ -175,6 +232,13 @@ public class TubeTrail : MonoBehaviour
 
     private void OnDisable()
     {
+        ClearTrail();
+        _motionSpeed = 0f;
+        CurrentSpeed = 0f;
+    }
+
+    private void ClearTrail()
+    {
         _points.Clear();
         _pointTimes.Clear();
         _vertices.Clear();
@@ -184,6 +248,16 @@ public class TubeTrail : MonoBehaviour
 
         if (_mesh != null)
             _mesh.Clear();
+        if (_meshRenderer != null)
+            _meshRenderer.enabled = false;
+    }
+
+    private void OnValidate()
+    {
+        _minimumSpeed = Mathf.Max(0f, _minimumSpeed);
+        _glowSpeed = Mathf.Max(_minimumSpeed, _glowSpeed);
+        _sides = Mathf.Max(3, _sides);
+        _maxPoints = Mathf.Max(2, _maxPoints);
     }
 
 #if UNITY_EDITOR

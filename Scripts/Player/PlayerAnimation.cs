@@ -18,6 +18,7 @@ public static class PlayerAnimationHash
     public static readonly int IsTrapped = Animator.StringToHash("IsTrapped");
     public static readonly int IsTrapJumping = Animator.StringToHash("IsTrapJumping");
     public static readonly int IsThrowing = Animator.StringToHash("IsThrowing");
+    public static readonly int ThrowPlaybackTime = Animator.StringToHash("ThrowPlaybackTime");
 }
 
 public static class AnimationLayerManager
@@ -69,7 +70,7 @@ public class PlayerAnimation : MonoBehaviour
     private AnimationLayerMixerPlayable _skillMixer;
     private AnimationClipPlayable _currentSkillPlayable;
     private AnimatorControllerPlayable _skillControllerPlayable;
-    private PlayableDirector _skillDirector;
+    [SerializeField] private PlayableDirector _skillDirector;
     private TimelineAsset _activeSkillTimeline;
     private double _skillStartTime;
     private double _skillEndTime;
@@ -94,12 +95,6 @@ public class PlayerAnimation : MonoBehaviour
         if (_anim != null)
             _animInitialLocalRotation = _anim.transform.localRotation;
 
-        _skillDirector = GetComponent<PlayableDirector>();
-        if (_skillDirector == null)
-            _skillDirector = gameObject.AddComponent<PlayableDirector>();
-
-        _skillDirector.playOnAwake = false;
-        _skillDirector.timeUpdateMode = DirectorUpdateMode.GameTime;
     }
 
     private void Start()
@@ -259,6 +254,27 @@ public class PlayerAnimation : MonoBehaviour
             return;
 
         _anim.SetLayerWeight(_actionLayerIndex, weight, _actionLayerTransitionDuration);
+    }
+
+    internal void SetThrowPlaybackTime(float normalizedTime, bool sampleImmediately = false)
+    {
+        if (_anim == null)
+            return;
+
+        float time = Mathf.Clamp01(normalizedTime);
+        // Throw Motion만 시간 파라미터로 제어하여 이동/점프 레이어는 계속 재생한다.
+        // OwnerNetworkAnimator가 이 Float를 복제하므로 관전자에게도 대기 자세가 전달된다.
+        _anim.SetFloat(PlayerAnimationHash.ThrowPlaybackTime, time);
+        if (!sampleImmediately || !_anim.GetBool(PlayerAnimationHash.IsThrowing)
+            || _actionLayerIndex < 0 || _actionLayerIndex >= _anim.layerCount)
+            return;
+
+        int throwState = Animator.StringToHash(_anim.GetLayerName(_actionLayerIndex) + ".Throw");
+        if (!_anim.HasState(_actionLayerIndex, throwState))
+            return;
+
+        _anim.Play(throwState, _actionLayerIndex, time);
+        _anim.Update(0f);
     }
 
     public void StopSkillPresentation()

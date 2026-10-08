@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEngine.UI;
+using TMPro;
 
 public interface ISkillGetter
 {
@@ -13,6 +14,10 @@ public class SkillPreview : MonoBehaviour, ISkillGetter
 
     [SerializeField]
     private Image[] _skillIcons = new Image[2];
+
+    [SerializeField] private TMP_Text[] _skillNames = new TMP_Text[2];
+    [SerializeField] private TMP_Text[] _skillCosts = new TMP_Text[2];
+    [SerializeField] private TMP_Text[] _skillDescriptions = new TMP_Text[2];
 
     private int[] _currentIndex;
 
@@ -75,7 +80,16 @@ public class SkillPreview : MonoBehaviour, ISkillGetter
         {
             SO_Skill skill = PlayerLoadoutState.Instance.GetSkill(i, _skillSet);
             _skillIcons[i].sprite = skill != null ? skill.SkillIcon : null;
+            SetDetail(_skillNames, i, skill != null ? skill.SkillName : "No skill");
+            SetDetail(_skillCosts, i, skill != null ? $"ENERGY  {skill.EnergyCost}" : "");
+            SetDetail(_skillDescriptions, i, skill != null ? skill.SkillDescription : "");
         }
+    }
+
+    private static void SetDetail(TMP_Text[] labels, int index, string value)
+    {
+        if (labels != null && index < labels.Length && labels[index] != null)
+            labels[index].text = value;
     }
 
     public SO_Skill GetSkill(int slotIndex) =>

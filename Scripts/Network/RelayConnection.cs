@@ -113,13 +113,15 @@ public sealed class RelayConnection
         }
     }
 
-    public async Task StartLocalHostAsync(ushort port)
+    public async Task StartLocalHostAsync()
     {
         await ShutdownAsync();
 
         UnityTransport transport = GetTransport();
         transport.UseWebSockets = false;
-        transport.SetConnectionData("127.0.0.1", port, "127.0.0.1");
+        // Practice has no remote clients. Port zero lets the OS atomically allocate a
+        // free loopback port, so other Editors or leftover sockets cannot block practice.
+        transport.SetConnectionData("127.0.0.1", 0, "127.0.0.1");
 
         NetworkManager.Singleton.NetworkConfig.ConnectionApproval = false;
         NetworkManager.Singleton.NetworkConfig.ConnectionData = Array.Empty<byte>();

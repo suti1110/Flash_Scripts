@@ -10,20 +10,13 @@ using UnityEngine.UI;
 [DisallowMultipleComponent]
 public sealed class CameraFreezeFramePresenter : MonoBehaviour
 {
-    [SerializeField, InspectorName("프리즈 프레임 캔버스 정렬 순서")]
-    private int _canvasSortingOrder = -100;
 
-    private Canvas _canvas;
-    private RawImage _rawImage;
+    [SerializeField] private Canvas _canvas;
+    [SerializeField] private RawImage _rawImage;
     private RenderTexture _capturedTexture;
     private bool _isFrozen;
 
     public bool IsFrozen => _isFrozen;
-
-    private void Awake()
-    {
-        EnsureUIInitialized();
-    }
 
     /// <summary>
     /// 지정된 카메라의 현재 프레임을 캡처하여 배경 RawImage에 표시하고 프리즈 상태로 진입합니다.
@@ -35,7 +28,7 @@ public sealed class CameraFreezeFramePresenter : MonoBehaviour
         if (targetCamera == null)
             return false;
 
-        EnsureUIInitialized();
+        if (_canvas == null || _rawImage == null) return false;
 
         // 기존에 캡처 중이던 텍스처가 있다면 먼저 안전하게 반환합니다.
         ReleaseTexture();
@@ -98,41 +91,6 @@ public sealed class CameraFreezeFramePresenter : MonoBehaviour
         _isFrozen = false;
     }
 
-    private void EnsureUIInitialized()
-    {
-        if (_canvas != null)
-            return;
-
-        // 씬/프리팹을 오염시키지 않도록 런타임에 전용 오버레이 캔버스를 동적 생성합니다.
-        GameObject canvasObject = new("HitStop_FreezeFrameCanvas");
-        canvasObject.transform.SetParent(transform, false);
-
-        _canvas = canvasObject.AddComponent<Canvas>();
-        _canvas.renderMode = RenderMode.ScreenSpaceOverlay;
-        _canvas.overrideSorting = true;
-        // 다른 인게임 UI(기본 sortingOrder 0 이상)보다 뒤에 위치하도록 낮은 값을 지정합니다.
-        _canvas.sortingOrder = _canvasSortingOrder;
-
-        GameObject imageObject = new(
-            "FreezeFrame_RawImage",
-            typeof(RectTransform),
-            typeof(CanvasRenderer),
-            typeof(RawImage)
-        );
-        imageObject.transform.SetParent(canvasObject.transform, false);
-
-        _rawImage = imageObject.GetComponent<RawImage>();
-        _rawImage.raycastTarget = false; // 마우스 클릭 등 UI 레이캐스트 차단 방지
-
-        RectTransform rect = _rawImage.rectTransform;
-        rect.anchorMin = Vector2.zero;
-        rect.anchorMax = Vector2.one;
-        rect.offsetMin = Vector2.zero;
-        rect.offsetMax = Vector2.zero;
-
-        canvasObject.SetActive(false);
-    }
-
     private void ReleaseTexture()
     {
         if (_capturedTexture != null)
@@ -150,21 +108,7 @@ public sealed class CameraFreezeFramePresenter : MonoBehaviour
     private void OnDestroy()
     {
         EndFreeze();
-        if (_canvas != null && _canvas.gameObject != null)
-        {
-            Destroy(_canvas.gameObject);
-            _canvas = null;
-        }
+        ReleaseTexture();
     }
 
-    private void OnValidate()
-    {
-        if (_canvasSortingOrder >= 0)
-        {
-            EditorLog.LogError(
-                "FreezeFrame 캔버스의 SortingOrder는 일반 UI 뒤에 배치되도록 0 미만이어야 합니다.",
-                this
-            );
-        }
-    }
 }

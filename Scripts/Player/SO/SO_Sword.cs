@@ -14,10 +14,21 @@ public class SO_Sword : ScriptableObject
     public MeshMaterialPair[] AllSwords;
 
     [SerializeField]
+    private SO_SwordStats _swordStats;
+
+    public SO_SwordStats SwordStats => _swordStats;
+
+    [SerializeField]
     [FormerlySerializedAs("SwordIndex")]
     private int _defaultSwordIndex;
 
     public int DefaultSwordIndex => _defaultSwordIndex;
+
+    private void OnValidate()
+    {
+        if (_swordStats == null)
+            EditorLog.LogError("SO_SwordStats가 할당되지 않았습니다.", this);
+    }
 }
 // SO_Sword은 인스펙터에서 조정하는 플레이어 설정 데이터를 런타임 로직과 분리해 제공한다.
 // 에셋 기반 참조를 사용하여 기능 추가 시 호출 코드를 수정하지 않고 설정을 교체할 수 있게 한다.
